@@ -13,21 +13,45 @@ contract BallotFactory is IBallotFactory {
     // electionId => shard count
     mapping(uint256 => uint256) private shardCounts;
 
+    // ballot address => electionId (0 means not registered)
+    mapping(address => uint256) private ballotToElection;
+
     address private voterRegistry;
     address private candidateRegistry;
-    address private voteToken;
-    address private roleBasedAccess;
+    address private rbacProxy;
+    address private auditTrail;
+
+    // ElectionManager address passed to every deployed Ballot
+    address private electionManager;
+
+    // Deployer address used to restrict setElectionManager
+    address private immutable deployer;
 
     constructor(
         address _voterRegistry,
         address _candidateRegistry,
-        address _voteToken,
-        address _roleBasedAccess
+        address _rbacProxy,
+        address _auditTrail
     ) {
         voterRegistry = _voterRegistry;
         candidateRegistry = _candidateRegistry;
-        voteToken = _voteToken;
-        roleBasedAccess = _roleBasedAccess;
+        rbacProxy = _rbacProxy;
+        auditTrail = _auditTrail;
+        deployer = msg.sender;
+    }
+
+    /// @notice Wire up ElectionManager after both contracts are deployed.
+    ///         May only be called once by the original deployer.
+    function setElectionManager(address _electionManager) external {
+        require(msg.sender == deployer, "Not authorized");
+        require(electionManager == address(0), "Already set");
+        require(_electionManager != address(0), "Zero address");
+        electionManager = _electionManager;
+    }
+
+    /// @notice Returns the electionId that a ballot was deployed for, or 0 if unknown.
+    function getElectionForBallot(address ballot) external view returns (uint256) {
+        return ballotToElection[ballot];
     }
 
     function deployBallot(
@@ -38,13 +62,15 @@ contract BallotFactory is IBallotFactory {
 
         Ballot ballot = new Ballot(
             electionId,
+            rbacProxy,
             voterRegistry,
             candidateRegistry,
-            voteToken,
-            roleBasedAccess
+            auditTrail,
+            electionManager
         );
 
         ballots[electionId][shardId] = address(ballot);
+        ballotToElection[address(ballot)] = electionId;
 
         if (shardId + 1 > shardCounts[electionId]) {
             shardCounts[electionId] = shardId + 1;

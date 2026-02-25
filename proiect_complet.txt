@@ -1,0 +1,2527 @@
+﻿--- FILE: C:\Users\sergi\Desktop\BachelorDegree\voting-contracts\hardhat.config.js ---
+
+require("@nomicfoundation/hardhat-toolbox");
+
+/** @type import('hardhat/config').HardhatUserConfig */
+module.exports = {
+  solidity: "0.8.34",
+};
+
+
+
+--- FILE: C:\Users\sergi\Desktop\BachelorDegree\voting-contracts\package.json ---
+
+{
+  "name": "voting-contracts",
+  "version": "1.0.0",
+  "description": "",
+  "main": "index.js",
+  "scripts": {
+    "test": "hardhat test",
+    "compile": "hardhat compile"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "devDependencies": {
+    "@nomicfoundation/hardhat-toolbox": "^6.0.0",
+    "@openzeppelin/contracts": "^5.4.0",
+    "@openzeppelin/contracts-upgradeable": "^5.4.0",
+    "hardhat": "^2.25.0"
+  }
+}
+
+
+
+--- FILE: C:\Users\sergi\Desktop\BachelorDegree\voting-contracts\README.md ---
+
+# voting-contracts
+
+
+
+--- FILE: C:\Users\sergi\Desktop\BachelorDegree\voting-contracts\.vscode\settings.json ---
+
+{
+  "solidity.compileUsingRemoteVersion": "v0.8.34"
+}
+
+
+
+--- FILE: C:\Users\sergi\Desktop\BachelorDegree\voting-contracts\contracts\access\IRoleBasedAccess.sol ---
+
+// SPDX-License-Identifier: UNLICENSED
+pragma solidity ^0.8.20;
+
+/// @notice A small interface that keeps role names and check functions so other contracts can use them
+interface IRoleBasedAccess {
+    // role constants
+    function DEFAULT_ADMIN_ROLE() external view returns (bytes32);
+    function REGISTRAR_ROLE()     external view returns (bytes32);
+    function AUDITOR_ROLE()       external view returns (bytes32);
+    function UPGRADER_ROLE()      external view returns (bytes32);
+
+    // role checks
+    function hasRole(bytes32 role, address account) external view returns (bool);
+
+    // role management
+    function assignRole(bytes32 role, address account) external;
+    function deleteRole(bytes32 role, address account) external;
+
+}
+
+
+
+--- FILE: C:\Users\sergi\Desktop\BachelorDegree\voting-contracts\contracts\access\RoleBasedAccess.sol ---
+
+// SPDX-License-Identifier: UNLICENSED
+pragma solidity ^0.8.20;
+
+import { IRoleBasedAccess } from "./IRoleBasedAccess.sol";
+
+/**
+ * @title RoleBasedAccess
+ * @notice This contract controls who can do what in the voting system.
+ *         It uses OpenZeppelinâ€™s AccessControlEnumerable (upgradeable version).
+ *         Has roles with names: ADMIN, REGISTRAR, AUDITOR, UPGRADER.
+ *         Because itâ€™s upgradeable, we use an initialize function instead of a constructor. (so the proxy holds the state)
+ */
+
+contract RoleBasedAccessLogicV1 is IRoleBasedAccess {
+    mapping(bytes32 => mapping(address => bool)) private _roles;
+
+    //Role constants 
+    bytes32 public constant DEFAULT_ADMIN_ROLE = keccak256("DEFAULT_ADMIN_ROLE");
+    bytes32 public constant REGISTRAR_ROLE     = keccak256("REGISTRAR_ROLE");
+    bytes32 public constant AUDITOR_ROLE       = keccak256("AUDITOR_ROLE");
+    bytes32 public constant UPGRADER_ROLE      = keccak256("UPGRADER_ROLE");
+
+    // Events (for logs)
+    event RoleAssigned(bytes32 indexed role, address indexed account, address indexed sender);
+    event RoleDeleted(bytes32 indexed role, address indexed account, address indexed sender);
+
+    // Initializer (called once through proxy)
+    bool private _initialized;
+
+    function initialize(address admin) external {
+        require(!_initialized, "Already initialized once");
+        _roles[DEFAULT_ADMIN_ROLE][admin] = true;
+        _initialized = true;
+    }
+
+    // to check if an account has a specific role
+    function hasRole(bytes32 role, address account) external view override returns (bool) {
+        return _roles[role][account];
+    }
+
+    //to assign a role to an account
+    function assignRole(bytes32 role, address account) external override {
+        require(_roles[DEFAULT_ADMIN_ROLE][msg.sender], "Not admin");
+        if (!_roles[role][account]) {
+            _roles[role][account] = true;
+            emit RoleAssigned(role, account, msg.sender);
+        }
+    }
+
+    // to revoke a role of an account
+    function deleteRole(bytes32 role, address account) external override {
+        require(_roles[DEFAULT_ADMIN_ROLE][msg.sender], "Not admin");
+        if (_roles[role][account]) {
+            _roles[role][account] = false;
+            emit RoleDeleted(role, account, msg.sender);
+        }
+    }
+}
+
+
+
+--- FILE: C:\Users\sergi\Desktop\BachelorDegree\voting-contracts\contracts\access\RoleBasedAccessProxy.sol ---
+
+// SPDX-License-Identifier: UNLICENSED
+pragma solidity ^0.8.20;
+
+import { IRoleBasedAccess } from "./IRoleBasedAccess.sol";
+
+/// @title RoleBasedAccessProxy
+/// @notice Upgradeable proxy that delegates calls to a logic contract.
+///         Only addresses with UPGRADER_ROLE in the logic contract can upgrade it.
+contract RoleBasedAccessProxy {
+    // EIP-1967 storage slot for implementation address
+    // bytes32(uint256(keccak256("eip1967.proxy.implementation")) - 1)
+    bytes32 private constant _IMPLEMENTATION_SLOT =
+        0x360894a13ba1a3210667c828492db98dca3e2076cc3735a920a3ca505d382bbc;
+
+    // Events to see who call upgrade function and which new contract is assigned
+    event Upgraded(address indexed newLogicContract, address indexed sender);
+
+    // Constructor
+    constructor(address _currentLogicContract, address _admin) {
+        _setLogicContract(_currentLogicContract);
+
+        // call initialize(admin) in logic contract context
+        (bool success, ) = _currentLogicContract.delegatecall(
+            abi.encodeWithSignature("initialize(address)", _admin)
+        );
+        require(success, "Initialization failed");
+    }
+
+    // internal getter for current logic contract
+    function _getLogicContract() internal view returns (address implementationSlot) {
+        assembly {
+            implementationSlot := sload(_IMPLEMENTATION_SLOT)
+        }
+    }
+
+    // internal setter for current logic contract
+    function _setLogicContract(address _newLogicContract) private {
+        assembly {
+            sstore(_IMPLEMENTATION_SLOT, _newLogicContract)
+        }
+    }
+
+    // delegate all calls and data to the currentLogicContract (used as fallback for functions not defined in this proxy file)
+    fallback() external payable {
+        _delegate(_getLogicContract());
+    }
+
+    receive() external payable {
+        _delegate(_getLogicContract());
+    }
+
+    // Upgrade function (by UPGRADER_ROLE only)
+    // change the logic contract address to a new one
+    function upgradeTo(address _newLogicContract) external {
+        bool isUpgrader = IRoleBasedAccess(address(this))
+            .hasRole(IRoleBasedAccess(address(this)).UPGRADER_ROLE(), msg.sender);
+
+        require(isUpgrader, "Not upgrader");
+        _setLogicContract(_newLogicContract);
+        emit Upgraded(_newLogicContract, msg.sender);
+    }
+
+    // the actual implementation of delegate 
+    function _delegate(address _currentLogicContract) internal {
+        assembly {
+            // copy msg.data in transaction memory, parameters:
+            // 1st parameter = the offset of calldata 
+            // 2nd paramter = is the offset of "memory" 
+            // 3rd parameter = return the size of calldata in bytes)
+            calldatacopy(0, 0, calldatasize())
+
+            // delegatecall to currentLogicContract
+            // delegate call signature is:
+            // delegatecall(gas, addr, inOffset, inSize, outOffset, outSize)
+            let result := delegatecall(gas(), _currentLogicContract, 0, calldatasize(), 0, 0)
+
+            // copy return data, parameters are:
+            // 1st parameter = destination in memory of transaction.
+            // 2nd paramter = offset in returndata buffer. EVM keeps the raw returndata in a buffer.
+            // 3rd parameter = how many bytes to copy)
+            //so practically it overwrites the calldata we copied earlier (as it works on the same temporary slot named memory)
+            returndatacopy(0, 0, returndatasize())
+
+            // return or revert
+            switch result
+            case 0 { revert(0, returndatasize()) } // revert occur anytime an error appear
+            default { return(0, returndatasize()) } // reads returndatasize() bytes from memory at offset 0.
+        }
+    }
+}
+
+
+
+--- FILE: C:\Users\sergi\Desktop\BachelorDegree\voting-contracts\contracts\audit\AuditTrail.sol ---
+
+// SPDX-License-Identifier: UNLICENSED
+pragma solidity ^0.8.20;
+
+import { IAuditTrail } from "./IAuditTrail.sol";
+import { IRoleBasedAccess } from "../access/IRoleBasedAccess.sol";
+
+/// @title AuditTrailLogic
+/// @notice Centralized black box logger for the voting system.
+/// Only accounts with DEFAULT_ADMIN, REGISTRAR or AUDITOR roles in RBAC proxy can log
+contract AuditTrail is IAuditTrail {
+    /// @notice address of the RoleBasedAccess proxy
+    address public immutable rbacProxy;
+
+    constructor(address _rbacProxy) {
+        require(_rbacProxy != address(0), "RBAC proxy zero");
+        rbacProxy = _rbacProxy;
+    }
+
+    function logAction(bytes32 actionCode, bytes32 refId) external override {
+        // check RBAC roles via proxy â€” authorize the direct caller, not tx origin
+        bool isRegistrar = IRoleBasedAccess(rbacProxy).hasRole(
+            IRoleBasedAccess(rbacProxy).REGISTRAR_ROLE(),
+            msg.sender
+        );
+        bool isAuditor = IRoleBasedAccess(rbacProxy).hasRole(
+            IRoleBasedAccess(rbacProxy).AUDITOR_ROLE(),
+            msg.sender
+        );
+        bool isAdmin = IRoleBasedAccess(rbacProxy).hasRole(
+            IRoleBasedAccess(rbacProxy).DEFAULT_ADMIN_ROLE(),
+            msg.sender
+        );
+
+        require(isRegistrar || isAuditor || isAdmin, "Not authorized to log");
+
+        // tx.origin is retained in the event as a passive audit record of who
+        // initiated the outer transaction â€” it is NOT used for authorization.
+        emit SystemAction(msg.sender, tx.origin, actionCode, refId, block.timestamp);
+    }
+}
+
+
+
+--- FILE: C:\Users\sergi\Desktop\BachelorDegree\voting-contracts\contracts\audit\IAuditTrail.sol ---
+
+// SPDX-License-Identifier: UNLICENSED
+pragma solidity ^0.8.20;
+
+/// @notice Interface for centralized AuditTrail logging contract ("black box contract")
+interface IAuditTrail {
+    /// @notice Emitted when authorized roles do an action, this is recorded.
+    /// @param caller the contract that invoked the log
+    /// @param actor the originating EOA (tx.origin)
+    /// @param actionCode short descrption of the action
+    /// @param refId reference id for correlation
+    /// @param timestamp block.timestamp of the log
+    event SystemAction(
+        address indexed caller,
+        address indexed actor,
+        bytes32 indexed actionCode,
+        bytes32 refId,
+        uint256 timestamp
+    );
+    
+    /// @param actionCode bytes32 short code describing the action
+    /// @param refId bytes32 reference id for correlation
+    function logAction(bytes32 actionCode, bytes32 refId) external;
+}
+
+
+
+--- FILE: C:\Users\sergi\Desktop\BachelorDegree\voting-contracts\contracts\ballot\Ballot.sol ---
+
+// SPDX-License-Identifier: UNLICENSED
+pragma solidity ^0.8.20;
+
+import { IBallot } from "./IBallot.sol";
+import { IVoterRegistry } from "../voter_registry/IVoterRegistry.sol";
+import { ICandidateRegistry } from "../candidate_registry/ICandidateRegistry.sol";
+import { IRoleBasedAccess } from "../access/IRoleBasedAccess.sol";
+import { IAuditTrail } from "../audit/IAuditTrail.sol";
+
+/// @dev Minimal interface used to notify ElectionManager of each vote cast.
+interface IElectionManagerTotals {
+    function incrementTotal(uint256 electionId, uint256 candidateId) external;
+}
+
+/// @title Ballot
+/// @notice Records votes for a single election.
+/// @dev Ballot enforces voting rules AND tallies votes per candidate.
+contract Ballot is IBallot {
+    uint256 public immutable override electionId;
+
+    address public immutable rbacProxy;
+    address public immutable voterRegistry;
+    address public immutable candidateRegistry;
+    address public immutable auditTrail;
+
+    /// @notice Address of the ElectionManager to notify on each vote.
+    ///         address(0) means incremental aggregation is disabled (tests /
+    ///         standalone deployments that do not need it).
+    address public immutable electionManager;
+
+    bool private ballotOpen;
+
+    // ðŸ”´ NEW: candidateId => votes (on-chain tally)
+    mapping(uint256 => uint256) private voteCounts;
+
+    constructor(
+        uint256 _electionId,
+        address _rbacProxy,
+        address _voterRegistry,
+        address _candidateRegistry,
+        address _auditTrail,
+        address _electionManager
+    ) {
+        require(_electionId != 0, "invalid electionId");
+        require(_rbacProxy != address(0), "rbac zero");
+        require(_voterRegistry != address(0), "voter registry zero");
+        require(_candidateRegistry != address(0), "candidate registry zero");
+        require(_auditTrail != address(0), "audit zero");
+
+        electionId = _electionId;
+        rbacProxy = _rbacProxy;
+        voterRegistry = _voterRegistry;
+        candidateRegistry = _candidateRegistry;
+        auditTrail = _auditTrail;
+        electionManager = _electionManager; // may be address(0)
+    }
+
+    function open() external override {
+        require(_hasRegistrarOrAdmin(msg.sender), "Not authorized");
+        ballotOpen = true;
+        emit BallotOpened();
+        IAuditTrail(auditTrail).logAction(bytes32("BALLOT_OPEN"), bytes32(electionId));
+    }
+
+    function close() external override {
+        require(_hasRegistrarOrAdmin(msg.sender), "Not authorized");
+        ballotOpen = false;
+        emit BallotClosed();
+        IAuditTrail(auditTrail).logAction(bytes32("BALLOT_CLOSE"), bytes32(electionId));
+    }
+
+    function isOpen() external view override returns (bool) {
+        return ballotOpen;
+    }
+
+    function castVote(
+        uint256 index,
+        bytes32 voterHash,
+        bytes32[] calldata proof,
+        uint256 candidateId
+    ) external override {
+        require(ballotOpen, "Ballot closed");
+
+        // marks voter as voted inside registry
+        IVoterRegistry(voterRegistry).vote(
+            electionId,
+            index,
+            voterHash,
+            proof
+        );
+
+        uint256[] memory validCandidates =
+            ICandidateRegistry(candidateRegistry).getCandidates(electionId);
+
+        bool found;
+        for (uint256 i = 0; i < validCandidates.length; i++) {
+            if (validCandidates[i] == candidateId) {
+                found = true;
+                break;
+            }
+        }
+        require(found, "Invalid candidate");
+
+        // ðŸ”´ NEW: on-chain tally
+        voteCounts[candidateId] += 1;
+
+        // Notify ElectionManager to keep global totals up-to-date (write-time aggregation)
+        if (electionManager != address(0)) {
+            IElectionManagerTotals(electionManager).incrementTotal(electionId, candidateId);
+        }
+
+        emit VoteCast(msg.sender, candidateId);
+        IAuditTrail(auditTrail).logAction(bytes32("VOTE_CAST"), bytes32(electionId));
+    }
+
+    // ðŸ”´ NEW: read tally
+    function getVoteCount(uint256 candidateId)
+        external
+        view
+        override
+        returns (uint256)
+    {
+        return voteCounts[candidateId];
+    }
+
+    function _hasRegistrarOrAdmin(address account)
+        internal
+        view
+        returns (bool)
+    {
+        bool isRegistrar = IRoleBasedAccess(rbacProxy).hasRole(
+            IRoleBasedAccess(rbacProxy).REGISTRAR_ROLE(),
+            account
+        );
+        bool isAdmin = IRoleBasedAccess(rbacProxy).hasRole(
+            IRoleBasedAccess(rbacProxy).DEFAULT_ADMIN_ROLE(),
+            account
+        );
+        return isRegistrar || isAdmin;
+    }
+}
+
+
+
+--- FILE: C:\Users\sergi\Desktop\BachelorDegree\voting-contracts\contracts\ballot\BallotFactory.sol ---
+
+// SPDX-License-Identifier: MIT
+pragma solidity ^0.8.20;
+
+import "./IBallotFactory.sol";
+import "./Ballot.sol";
+
+// Factory that deploys ballots per election shard
+contract BallotFactory is IBallotFactory {
+
+    // electionId => shardId => ballot
+    mapping(uint256 => mapping(uint256 => address)) private ballots;
+
+    // electionId => shard count
+    mapping(uint256 => uint256) private shardCounts;
+
+    // ballot address => electionId (0 means not registered)
+    mapping(address => uint256) private ballotToElection;
+
+    address private voterRegistry;
+    address private candidateRegistry;
+    address private rbacProxy;
+    address private auditTrail;
+
+    // ElectionManager address passed to every deployed Ballot
+    address private electionManager;
+
+    // Deployer address used to restrict setElectionManager
+    address private immutable deployer;
+
+    constructor(
+        address _voterRegistry,
+        address _candidateRegistry,
+        address _rbacProxy,
+        address _auditTrail
+    ) {
+        voterRegistry = _voterRegistry;
+        candidateRegistry = _candidateRegistry;
+        rbacProxy = _rbacProxy;
+        auditTrail = _auditTrail;
+        deployer = msg.sender;
+    }
+
+    /// @notice Wire up ElectionManager after both contracts are deployed.
+    ///         May only be called once by the original deployer.
+    function setElectionManager(address _electionManager) external {
+        require(msg.sender == deployer, "Not authorized");
+        require(electionManager == address(0), "Already set");
+        require(_electionManager != address(0), "Zero address");
+        electionManager = _electionManager;
+    }
+
+    /// @notice Returns the electionId that a ballot was deployed for, or 0 if unknown.
+    function getElectionForBallot(address ballot) external view returns (uint256) {
+        return ballotToElection[ballot];
+    }
+
+    function deployBallot(
+        uint256 electionId,
+        uint256 shardId
+    ) external override returns (address) {
+        require(ballots[electionId][shardId] == address(0), "Ballot exists");
+
+        Ballot ballot = new Ballot(
+            electionId,
+            rbacProxy,
+            voterRegistry,
+            candidateRegistry,
+            auditTrail,
+            electionManager
+        );
+
+        ballots[electionId][shardId] = address(ballot);
+        ballotToElection[address(ballot)] = electionId;
+
+        if (shardId + 1 > shardCounts[electionId]) {
+            shardCounts[electionId] = shardId + 1;
+        }
+
+        emit BallotDeployed(electionId, shardId, address(ballot));
+
+        return address(ballot);
+    }
+
+    function getBallot(
+        uint256 electionId,
+        uint256 shardId
+    ) external view override returns (address) {
+        return ballots[electionId][shardId];
+    }
+
+    function getShardCount(
+        uint256 electionId
+    ) external view override returns (uint256) {
+        return shardCounts[electionId];
+    }
+}
+
+
+
+--- FILE: C:\Users\sergi\Desktop\BachelorDegree\voting-contracts\contracts\ballot\IBallot.sol ---
+
+// SPDX-License-Identifier: UNLICENSED
+pragma solidity ^0.8.20;
+
+/// @notice Interface for the Ballot contract
+/// @dev Each Ballot belongs to exactly one election (immutable electionId).
+interface IBallot {
+    /// @notice Emitted when someone casts a vote
+    /// @param voter the address of the voter (msg.sender)
+    /// @param candidateId the candidate the voter selected
+    event VoteCast(address indexed voter, uint256 indexed candidateId);
+
+    /// @notice Emitted when the ballot is opened
+    event BallotOpened();
+
+    /// @notice Emitted when the ballot is closed
+    event BallotClosed();
+
+    /// @notice cast a vote for a candidate
+    /// @param index the index of the voter in the Merkle tree
+    /// @param voterHash the hashed identifier of the voter
+    /// @param proof the Merkle proof to show this voter is in the snapshot
+    /// @param candidateId the candidate the voter selects
+    function castVote(
+        uint256 index,
+        bytes32 voterHash,
+        bytes32[] calldata proof,
+        uint256 candidateId
+    ) external;
+
+    /// @notice open the ballot (only admin or registrar)
+    function open() external;
+
+    /// @notice close the ballot (only admin or registrar)
+    function close() external;
+
+    /// @notice check if the ballot is currently open
+    function isOpen() external view returns (bool);
+
+    /// @notice return the electionId this ballot belongs to
+    function electionId() external view returns (uint256);
+
+    /// ðŸ”´ NEW â€” read on-chain tally for a candidate (per shard)
+    function getVoteCount(uint256 candidateId) external view returns (uint256);
+}
+
+
+
+--- FILE: C:\Users\sergi\Desktop\BachelorDegree\voting-contracts\contracts\ballot\IBallotFactory.sol ---
+
+// SPDX-License-Identifier: MIT
+pragma solidity ^0.8.20;
+
+// Factory interface for ballots
+interface IBallotFactory {
+
+    event BallotDeployed(
+        uint256 indexed electionId,
+        uint256 indexed shardId,
+        address ballot
+    );
+
+    // Deploy a ballot for an election shard
+    function deployBallot(
+        uint256 electionId,
+        uint256 shardId
+    ) external returns (address);
+
+    // Get a ballot for an election shard
+    function getBallot(
+        uint256 electionId,
+        uint256 shardId
+    ) external view returns (address);
+
+    // Get number of shards for an election
+    function getShardCount(
+        uint256 electionId
+    ) external view returns (uint256);
+}
+
+
+
+--- FILE: C:\Users\sergi\Desktop\BachelorDegree\voting-contracts\contracts\candidate_registry\CandidateRegistry.sol ---
+
+// SPDX-License-Identifier: UNLICENSED
+pragma solidity ^0.8.20;
+
+import { ICandidateRegistry } from "./ICandidateRegistry.sol";
+import { IRoleBasedAccess } from "../access/IRoleBasedAccess.sol";
+import { IAuditTrail } from "../audit/IAuditTrail.sol";
+
+/// @title CandidateRegistry
+/// @notice Keeps candidates directly on-chain.
+///         Each candidate has a party + one or more names.
+///         For example: presidential = 1 name, parliamentary = list of names.
+contract CandidateRegistry is ICandidateRegistry {
+    address public immutable rbacProxy;
+    address public immutable auditTrail;
+
+    // counter for auto IDs
+    uint256 private nextCandidateId;
+
+    // candidateId => party
+    mapping(uint256 => string) private candidateParty;
+
+    // candidateId => list of names
+    mapping(uint256 => string[]) private candidateNames;
+
+    // all active candidate ids
+    uint256[] private candidateIds;
+
+    // electionId => candidate ids at snapshot
+    mapping(uint256 => uint256[]) private snapshots;
+
+    constructor(address _rbacProxy, address _auditTrail) {
+        require(_rbacProxy != address(0), "rbac zero");
+        require(_auditTrail != address(0), "audit zero");
+        rbacProxy = _rbacProxy;
+        auditTrail = _auditTrail;
+    }
+
+    /// add candidate, contract generates id
+    function addCandidate(string calldata party, string[] calldata names) external override {
+        require(_hasRegistrarOrAdmin(msg.sender), "Not authorized");
+        require(names.length > 0, "Empty list");
+
+        uint256 candidateId = ++nextCandidateId;
+
+        candidateParty[candidateId] = party;
+        for (uint256 i = 0; i < names.length; i++) {
+            candidateNames[candidateId].push(names[i]);
+        }
+        candidateIds.push(candidateId);
+
+        emit CandidateAdded(candidateId, party, names, msg.sender);
+        IAuditTrail(auditTrail).logAction(bytes32("ADD_CANDIDATE"), bytes32(candidateId));
+    }
+
+    /// remove candidate by id
+    function removeCandidate(uint256 candidateId) external override {
+        require(_hasRegistrarOrAdmin(msg.sender), "Not authorized");
+        require(bytes(candidateParty[candidateId]).length != 0, "Not found");
+
+        delete candidateParty[candidateId];
+        delete candidateNames[candidateId];
+
+        for (uint256 i = 0; i < candidateIds.length; i++) {
+            if (candidateIds[i] == candidateId) {
+                candidateIds[i] = candidateIds[candidateIds.length - 1];
+                candidateIds.pop();
+                break;
+            }
+        }
+
+        emit CandidateRemoved(candidateId, msg.sender);
+        IAuditTrail(auditTrail).logAction(bytes32("REMOVE_CANDIDATE"), bytes32(candidateId));
+    }
+
+    function getParty(uint256 candidateId) external view override returns (string memory) {
+        return candidateParty[candidateId];
+    }
+
+    function getCandidateNames(uint256 candidateId) external view override returns (string[] memory) {
+        return candidateNames[candidateId];
+    }
+
+    function snapshot(uint256 electionId) external override {
+        require(_hasRegistrarOrAdmin(msg.sender), "Not authorized");
+        require(snapshots[electionId].length == 0, "Already snapshotted");
+
+        snapshots[electionId] = candidateIds;
+
+        emit CandidateSnapshot(electionId, block.timestamp);
+        IAuditTrail(auditTrail).logAction(bytes32("SNAPSHOT_CAND"), bytes32(electionId));
+    }
+
+    function getCandidates(uint256 electionId) external view override returns (uint256[] memory) {
+        return snapshots[electionId];
+    }
+
+    function _hasRegistrarOrAdmin(address account) internal view returns (bool) {
+        bool isRegistrar = IRoleBasedAccess(rbacProxy).hasRole(
+            IRoleBasedAccess(rbacProxy).REGISTRAR_ROLE(),
+            account
+        );
+        bool isAdmin = IRoleBasedAccess(rbacProxy).hasRole(
+            IRoleBasedAccess(rbacProxy).DEFAULT_ADMIN_ROLE(),
+            account
+        );
+        return isRegistrar || isAdmin;
+    }
+}
+
+
+
+--- FILE: C:\Users\sergi\Desktop\BachelorDegree\voting-contracts\contracts\candidate_registry\ICandidateRegistry.sol ---
+
+// SPDX-License-Identifier: UNLICENSED
+pragma solidity ^0.8.20;
+
+/// @notice Interface for candidate registry
+/// @dev Stores candidates directly on-chain (party + names).
+interface ICandidateRegistry {
+    event CandidateAdded(uint256 indexed candidateId, string party, string[] names, address indexed registrar);
+    event CandidateRemoved(uint256 indexed candidateId, address indexed registrar);
+    event CandidateSnapshot(uint256 indexed electionId, uint256 timestamp);
+
+    /// Add a new candidate (party + list of names). ID is auto-generated.
+    function addCandidate(string calldata party, string[] calldata names) external;
+
+    /// Remove a candidate by id
+    function removeCandidate(uint256 candidateId) external;
+
+    /// Get party of a candidate
+    function getParty(uint256 candidateId) external view returns (string memory);
+
+    /// Get all names for a candidate
+    function getCandidateNames(uint256 candidateId) external view returns (string[] memory);
+
+    /// Take a snapshot of current candidates for an election
+    function snapshot(uint256 electionId) external;
+
+    /// Get all candidate ids for a given election
+    function getCandidates(uint256 electionId) external view returns (uint256[] memory);
+}
+
+
+
+--- FILE: C:\Users\sergi\Desktop\BachelorDegree\voting-contracts\contracts\election_manager\ElectionManager.sol ---
+
+// SPDX-License-Identifier: MIT
+pragma solidity ^0.8.20;
+
+import "../ballot/IBallotFactory.sol";
+import "../ballot/IBallot.sol";
+import "../tally_verifier/ITallyVerifier.sol";
+import "../access/IRoleBasedAccess.sol";
+
+/// @dev Minimal interface for the extra lookup added to BallotFactory
+interface IBallotLookup {
+    function getElectionForBallot(address ballot) external view returns (uint256);
+}
+
+// Manages election lifecycle with sharded ballots
+contract ElectionManager {
+
+    enum ElectionState {
+        Created,
+        Live,
+        Finalized
+    }
+
+    struct Election {
+        string name;
+        ElectionState state;
+        uint256 shardCount;
+    }
+
+    uint256 private electionCounter;
+
+    mapping(uint256 => Election) private elections;
+
+    // Incremental aggregation: electionId => candidateId => total votes
+    mapping(uint256 => mapping(uint256 => uint256)) private totalVotes;
+
+    IBallotFactory private ballotFactory;
+    ITallyVerifier private tallyVerifier;
+    IRoleBasedAccess private rbac;
+
+    constructor(
+        address _ballotFactory,
+        address _tallyVerifier,
+        address _rbacProxy
+    ) {
+        ballotFactory = IBallotFactory(_ballotFactory);
+        tallyVerifier = ITallyVerifier(_tallyVerifier);
+        rbac = IRoleBasedAccess(_rbacProxy);
+    }
+
+    function _hasAdminRole(address account) internal view returns (bool) {
+        return rbac.hasRole(rbac.DEFAULT_ADMIN_ROLE(), account);
+    }
+
+    // Create election with shards
+    function createElection(
+        string calldata name,
+        uint256 shardCount
+    ) external returns (uint256) {
+        require(_hasAdminRole(msg.sender), "Not authorized");
+        require(shardCount > 0, "Invalid shard count");
+
+        electionCounter++;
+
+        elections[electionCounter] = Election({
+            name: name,
+            state: ElectionState.Created,
+            shardCount: shardCount
+        });
+
+        // Deploy ballots per shard
+        for (uint256 i = 0; i < shardCount; i++) {
+            ballotFactory.deployBallot(electionCounter, i);
+        }
+
+        return electionCounter;
+    }
+
+    // Start election â€” transitions state and opens all shard ballots
+    function startElection(uint256 electionId) external {
+        require(_hasAdminRole(msg.sender), "Not authorized");
+        require(
+            elections[electionId].state == ElectionState.Created,
+            "Wrong state"
+        );
+
+        elections[electionId].state = ElectionState.Live;
+
+        uint256 shardCount = elections[electionId].shardCount;
+        for (uint256 i = 0; i < shardCount; i++) {
+            IBallot(ballotFactory.getBallot(electionId, i)).open();
+        }
+    }
+
+    // Finalize election â€” verifies tally and closes all shard ballots
+    function finalizeElection(
+        uint256 electionId,
+        bytes calldata proof,
+        bytes calldata publicInputs
+    ) external {
+        require(_hasAdminRole(msg.sender), "Not authorized");
+        require(
+            elections[electionId].state == ElectionState.Live,
+            "Election not live"
+        );
+
+        bool valid = tallyVerifier.verifyTally(
+            electionId,
+            proof,
+            publicInputs
+        );
+
+        require(valid, "Invalid tally");
+
+        elections[electionId].state = ElectionState.Finalized;
+
+        uint256 shardCount = elections[electionId].shardCount;
+        for (uint256 i = 0; i < shardCount; i++) {
+            IBallot(ballotFactory.getBallot(electionId, i)).close();
+        }
+    }
+
+    // Get ballot for shard
+    function getBallot(
+        uint256 electionId,
+        uint256 shardId
+    ) external view returns (address) {
+        return ballotFactory.getBallot(electionId, shardId);
+    }
+
+    // Get election state
+    function getElectionState(
+        uint256 electionId
+    ) external view returns (ElectionState) {
+        return elections[electionId].state;
+    }
+
+    /// @notice Called by registered Ballot shards on every castVote to keep
+    ///         global totals up-to-date at write-time (O(1) per vote).
+    /// @dev Security: validates msg.sender is a ballot that was deployed by
+    ///      BallotFactory for exactly this electionId.
+    function incrementTotal(uint256 electionId, uint256 candidateId) external {
+        // Verify the caller is a ballot registered for this electionId
+        uint256 registeredId = IBallotLookup(address(ballotFactory))
+            .getElectionForBallot(msg.sender);
+        require(
+            electionId != 0 && registeredId == electionId,
+            "Not an authorized ballot"
+        );
+        totalVotes[electionId][candidateId] += 1;
+    }
+
+    /// @notice Returns the pre-aggregated vote total for one candidate.
+    ///         Used by ResultAggregator to avoid shard loops.
+    function getElectionTotalVotes(
+        uint256 electionId,
+        uint256 candidateId
+    ) external view returns (uint256) {
+        return totalVotes[electionId][candidateId];
+    }
+}
+
+
+
+--- FILE: C:\Users\sergi\Desktop\BachelorDegree\voting-contracts\contracts\election_manager\IElectionManager.sol ---
+
+// SPDX-License-Identifier: MIT
+pragma solidity ^0.8.20;
+
+// Interface for election lifecycle management
+interface IElectionManager {
+    function createElection(string calldata name) external returns (uint256);
+    function startElection(uint256 electionId) external;
+    function finalizeElection(
+        uint256 electionId,
+        bytes calldata proof,
+        bytes calldata publicInputs
+    ) external;
+
+    function getBallot(uint256 electionId) external view returns (address);
+}
+
+
+
+--- FILE: C:\Users\sergi\Desktop\BachelorDegree\voting-contracts\contracts\result_aggregator\IResultAggregator.sol ---
+
+// SPDX-License-Identifier: UNLICENSED
+pragma solidity ^0.8.20;
+
+/// @title IResultAggregator
+/// @notice Interface for aggregating on-chain vote tallies
+interface IResultAggregator {
+
+    /// @notice Returns total votes for a candidate across all shards
+    function getTotalVotes(
+        uint256 electionId,
+        uint256 candidateId
+    ) external view returns (uint256);
+
+    /// @notice Returns full results for an election
+    function getResults(
+        uint256 electionId
+    )
+        external
+        view
+        returns (
+            uint256[] memory candidateIds,
+            uint256[] memory votes
+        );
+}
+
+
+
+--- FILE: C:\Users\sergi\Desktop\BachelorDegree\voting-contracts\contracts\result_aggregator\ResultAggregator.sol ---
+
+// SPDX-License-Identifier: UNLICENSED
+pragma solidity ^0.8.20;
+
+import "../ballot/IBallotFactory.sol";
+import "../ballot/IBallot.sol";
+import "../candidate_registry/ICandidateRegistry.sol";
+
+/// @dev Minimal interface to read pre-aggregated totals from ElectionManager.
+interface IElectionTotals {
+    function getElectionTotalVotes(
+        uint256 electionId,
+        uint256 candidateId
+    ) external view returns (uint256);
+}
+
+/// @title ResultAggregator
+/// @notice Aggregates on-chain tallies from ballot shards
+/// @dev Totals are maintained incrementally by ElectionManager at write-time,
+///      so read operations are O(candidates) instead of O(candidates Ã— shards).
+contract ResultAggregator {
+
+    IBallotFactory private ballotFactory;
+    ICandidateRegistry private candidateRegistry;
+    IElectionTotals private electionManager;
+
+    constructor(
+        address _ballotFactory,
+        address _candidateRegistry,
+        address _electionManager
+    ) {
+        ballotFactory = IBallotFactory(_ballotFactory);
+        candidateRegistry = ICandidateRegistry(_candidateRegistry);
+        electionManager = IElectionTotals(_electionManager);
+    }
+
+    /// @notice Total votes for one candidate â€” reads directly from ElectionManager (O(1))
+    function getTotalVotes(
+        uint256 electionId,
+        uint256 candidateId
+    ) external view returns (uint256 total) {
+        total = electionManager.getElectionTotalVotes(electionId, candidateId);
+    }
+
+    /// @notice Full results for an election â€” O(candidates), no shard loops
+    function getResults(
+        uint256 electionId
+    )
+        external
+        view
+        returns (
+            uint256[] memory candidateIds,
+            uint256[] memory votes
+        )
+    {
+        candidateIds = candidateRegistry.getCandidates(electionId);
+        votes = new uint256[](candidateIds.length);
+
+        for (uint256 c = 0; c < candidateIds.length; c++) {
+            votes[c] = electionManager.getElectionTotalVotes(electionId, candidateIds[c]);
+        }
+    }
+}
+
+
+
+--- FILE: C:\Users\sergi\Desktop\BachelorDegree\voting-contracts\contracts\tally_verifier\ITallyVerifier.sol ---
+
+// SPDX-License-Identifier: MIT
+pragma solidity ^0.8.20;
+
+// Interface for tally verification
+interface ITallyVerifier {
+    function verifyTally(
+        uint256 electionId,
+        bytes calldata proof,
+        bytes calldata publicInputs
+    ) external returns (bool);
+}
+
+
+
+--- FILE: C:\Users\sergi\Desktop\BachelorDegree\voting-contracts\contracts\tally_verifier\TallyVerifier.sol ---
+
+// SPDX-License-Identifier: MIT
+pragma solidity ^0.8.20;
+
+import "./ITallyVerifier.sol";
+
+// Mock verifier for election results
+contract TallyVerifier is ITallyVerifier {
+
+    // Emitted after tally verification
+    event VerifiedTally(
+        uint256 electionId,
+        bool valid
+    );
+
+    function verifyTally(
+        uint256 electionId,
+        bytes calldata, // proof (unused for now)
+        bytes calldata  // publicInputs (unused for now)
+    ) external override returns (bool) {
+
+        // Always valid in this mock
+        bool result = true;
+
+        emit VerifiedTally(electionId, result);
+        return result;
+    }
+}
+
+
+
+--- FILE: C:\Users\sergi\Desktop\BachelorDegree\voting-contracts\contracts\voter_registry\IVoterRegistry.sol ---
+
+// SPDX-License-Identifier: UNLICENSED
+pragma solidity ^0.8.20;
+
+/// @notice Interface for voter registry
+/// @dev We only keep snapshots here, not the full list of voters.
+interface IVoterRegistry {
+    /// This event is emitted when we take a snapshot for an election
+    event SnapshotTaken(uint256 indexed electionId, bytes32 merkleRoot, uint256 timestamp);
+
+    /// this event is fired when someone actually votes
+    event Voted(uint256 indexed electionId, uint256 indexed index, bytes32 voterHash);
+
+    /// Save a new snapshot for an election, with the merkle root of the voter list
+    function snapshot(uint256 electionId, bytes32 merkleRoot) external;
+
+    /// Get the merkle root for a given election
+    function getSnapshot(uint256 electionId) external view returns (bytes32);
+
+    /// Verify if a voter hash is inside a snapshot using a merkle proof
+    /// @param electionId the election we check
+    /// @param leaf the hash of the voter
+    /// @param proof the path of sibling hashes needed to rebuild the root
+    function verifyProof(
+        uint256 electionId,
+        bytes32 leaf,
+        bytes32[] calldata proof
+    ) external view returns (bool);
+
+    /// this function lets a voter actually cast a vote, it will also check that he didnt vote before
+    /// @param electionId which election this vote is for
+    /// @param index the index we gave the voter offchain
+    /// @param voterHash the hash we stored in the tree
+    /// @param proof the proof from the tree to show this voter exists
+    function vote(
+        uint256 electionId,
+        uint256 index,
+        bytes32 voterHash,
+        bytes32[] calldata proof
+    ) external;
+
+    /// just a helper to check if a voter index already voted or not
+    /// @param electionId the election we want to check
+    /// @param index the index of the voter
+    function hasVoted(uint256 electionId, uint256 index) external view returns (bool);
+}
+
+
+
+--- FILE: C:\Users\sergi\Desktop\BachelorDegree\voting-contracts\contracts\voter_registry\VoterRegistry.sol ---
+
+// SPDX-License-Identifier: UNLICENSED
+pragma solidity ^0.8.20;
+
+import { IVoterRegistry } from "./IVoterRegistry.sol";
+import { IRoleBasedAccess } from "../access/IRoleBasedAccess.sol";
+import { IAuditTrail } from "../audit/IAuditTrail.sol";
+
+/// @title VoterRegistry
+/// @notice Stores merkle roots for voter lists (eligibility) and uses bitmap to ensure 1 vote per voter per election.
+contract VoterRegistry is IVoterRegistry {
+    /// address of the RBAC proxy (for roles)
+    address public immutable rbacProxy;
+
+    /// address of the AuditTrail contract (for logging)
+    address public immutable auditTrail;
+
+    /// mapping from election id to the saved merkle root
+    mapping(uint256 => bytes32) private snapshots;
+
+    /// mapping for voted bitmap: electionId => wordIndex => 256-bit word
+    mapping(uint256 => mapping(uint256 => uint256)) private votedBitmap;
+
+    /// set the addresses for RBAC and AuditTrail
+    constructor(address _rbacProxy, address _auditTrail) {
+        require(_rbacProxy != address(0), "rbac zero");
+        require(_auditTrail != address(0), "audit zero");
+        rbacProxy = _rbacProxy;
+        auditTrail = _auditTrail;
+    }
+
+    /// save a new merkle root for an election
+    /// only admin or registrar can call this
+    function snapshot(uint256 electionId, bytes32 merkleRoot) external override {
+        require(_hasRegistrarOrAdmin(msg.sender), "Not authorized");
+        require(snapshots[electionId] == bytes32(0), "Already snapshotted");
+
+        snapshots[electionId] = merkleRoot;
+
+        emit SnapshotTaken(electionId, merkleRoot, block.timestamp);
+        IAuditTrail(auditTrail).logAction(bytes32("SNAPSHOT"), bytes32(electionId));
+    }
+
+    /// get the root for an election
+    function getSnapshot(uint256 electionId) external view override returns (bytes32) {
+        return snapshots[electionId];
+    }
+
+    /// check if a leaf belongs to the root saved for electionId
+    function verifyProof(
+        uint256 electionId,
+        bytes32 leaf,
+        bytes32[] calldata proof
+    ) public view override returns (bool) {
+        bytes32 root = snapshots[electionId];
+        require(root != bytes32(0), "No snapshot");
+
+        bytes32 computedHash = leaf;
+        for (uint256 i = 0; i < proof.length; i++) {
+            bytes32 proofElement = proof[i];
+            if (computedHash <= proofElement) {
+                computedHash = keccak256(abi.encodePacked(computedHash, proofElement));
+            } else {
+                computedHash = keccak256(abi.encodePacked(proofElement, computedHash));
+            }
+        }
+        return computedHash == root;
+    }
+
+    /// Cast a vote: checks eligibility and uniqueness
+    /// @param electionId the election id
+    /// @param index the voter's index inside the Merkle tree
+    /// @param voterHash the hashed voter code
+    /// @param proof the Merkle proof showing (index, voterHash) is part of the root
+    function vote(
+        uint256 electionId,
+        uint256 index,
+        bytes32 voterHash,
+        bytes32[] calldata proof
+    ) external override {
+        // 1. Verify eligibility
+        bytes32 leaf = keccak256(abi.encodePacked(index, voterHash));
+        require(verifyProof(electionId, leaf, proof), "Not eligible");
+
+        // 2. Check bitmap for uniqueness
+        uint256 wordIndex = index / 256;
+        uint256 bitIndex = index % 256;
+        uint256 word = votedBitmap[electionId][wordIndex];
+        uint256 mask = (1 << bitIndex);
+
+        require(word & mask == 0, "Already voted");
+
+        // 3. Mark as voted
+        votedBitmap[electionId][wordIndex] = word | mask;
+
+        emit Voted(electionId, index, voterHash);
+    }
+
+    /// just a helper to check if a voter index already voted or not
+    /// @param electionId the election we want to check
+    /// @param index the index of the voter
+    function hasVoted(uint256 electionId, uint256 index) external view override returns (bool) {
+        uint256 wordIndex = index / 256;
+        uint256 bitIndex = index % 256;
+        uint256 word = votedBitmap[electionId][wordIndex];
+        return (word & (1 << bitIndex)) != 0;
+    }
+
+    /// internal helper to check roles
+    function _hasRegistrarOrAdmin(address account) internal view returns (bool) {
+        bool isRegistrar = IRoleBasedAccess(rbacProxy).hasRole(
+            IRoleBasedAccess(rbacProxy).REGISTRAR_ROLE(),
+            account
+        );
+        bool isAdmin = IRoleBasedAccess(rbacProxy).hasRole(
+            IRoleBasedAccess(rbacProxy).DEFAULT_ADMIN_ROLE(),
+            account
+        );
+        return isRegistrar || isAdmin;
+    }
+}
+
+
+
+--- FILE: C:\Users\sergi\Desktop\BachelorDegree\voting-contracts\test\access\RoleBasedAccessProxy.test.js ---
+
+const { expect } = require("chai");
+const { ethers } = require("hardhat");
+
+describe("RoleBasedAccessProxy", function () {
+  let owner, user1, user2, upgrader;
+  let logicV1, logicV2, proxy, access;
+
+  beforeEach(async function () {
+    [owner, user1, user2, upgrader] = await ethers.getSigners();
+
+    const LogicV1 = await ethers.getContractFactory(
+      "contracts/access/RoleBasedAccess.sol:RoleBasedAccessLogicV1"
+    );
+    logicV1 = await LogicV1.deploy();
+    await logicV1.waitForDeployment();
+
+    const Proxy = await ethers.getContractFactory(
+      "contracts/access/RoleBasedAccessProxy.sol:RoleBasedAccessProxy"
+    );
+    proxy = await Proxy.deploy(await logicV1.getAddress(), await owner.getAddress());
+    await proxy.waitForDeployment();
+
+    access = await ethers.getContractAt(
+      "contracts/access/IRoleBasedAccess.sol:IRoleBasedAccess",
+      await proxy.getAddress()
+    );
+
+    const LogicV2 = await ethers.getContractFactory(
+      "contracts/access/RoleBasedAccess.sol:RoleBasedAccessLogicV1"
+    );
+    logicV2 = await LogicV2.deploy();
+    await logicV2.waitForDeployment();
+  });
+
+  // â”€â”€ Initialization â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+
+  it("proxy constructor grants DEFAULT_ADMIN_ROLE to deployer", async function () {
+    const adminRole = await access.DEFAULT_ADMIN_ROLE();
+    expect(await access.hasRole(adminRole, owner.address)).to.equal(true);
+  });
+
+  it("non-admin does NOT have DEFAULT_ADMIN_ROLE by default", async function () {
+    const adminRole = await access.DEFAULT_ADMIN_ROLE();
+    expect(await access.hasRole(adminRole, user1.address)).to.equal(false);
+  });
+
+  // â”€â”€ assignRole â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+
+  it("admin can assign REGISTRAR_ROLE to a user", async function () {
+    const role = await access.REGISTRAR_ROLE();
+    await access.assignRole(role, user1.address);
+    expect(await access.hasRole(role, user1.address)).to.equal(true);
+  });
+
+  it("admin can assign AUDITOR_ROLE to a user", async function () {
+    const role = await access.AUDITOR_ROLE();
+    await access.assignRole(role, user1.address);
+    expect(await access.hasRole(role, user1.address)).to.equal(true);
+  });
+
+  it("assigning a role twice does not revert and keeps role set", async function () {
+    const role = await access.REGISTRAR_ROLE();
+    await access.assignRole(role, user1.address);
+    await access.assignRole(role, user1.address); // idempotent
+    expect(await access.hasRole(role, user1.address)).to.equal(true);
+  });
+
+  it("non-admin cannot assignRole â€” reverts with 'Not admin'", async function () {
+    const role = await access.REGISTRAR_ROLE();
+    await expect(
+      access.connect(user1).assignRole(role, user2.address)
+    ).to.be.revertedWith("Not admin");
+  });
+
+  it("registrar cannot assign roles to others", async function () {
+    const registrarRole = await access.REGISTRAR_ROLE();
+    await access.assignRole(registrarRole, user1.address);
+    await expect(
+      access.connect(user1).assignRole(registrarRole, user2.address)
+    ).to.be.revertedWith("Not admin");
+  });
+
+  // â”€â”€ deleteRole â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+
+  it("admin can revoke a previously assigned role", async function () {
+    const role = await access.AUDITOR_ROLE();
+    await access.assignRole(role, user1.address);
+    await access.deleteRole(role, user1.address);
+    expect(await access.hasRole(role, user1.address)).to.equal(false);
+  });
+
+  it("deleting a role that was never assigned does not revert", async function () {
+    const role = await access.AUDITOR_ROLE();
+    await access.deleteRole(role, user1.address); // should not revert
+    expect(await access.hasRole(role, user1.address)).to.equal(false);
+  });
+
+  it("non-admin cannot deleteRole â€” reverts with 'Not admin'", async function () {
+    const role = await access.AUDITOR_ROLE();
+    await access.assignRole(role, user1.address);
+    await expect(
+      access.connect(user1).deleteRole(role, user1.address)
+    ).to.be.revertedWith("Not admin");
+  });
+
+  // â”€â”€ upgradeTo â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+
+  it("non-upgrader cannot call upgradeTo â€” reverts with 'Not upgrader'", async function () {
+    await expect(
+      proxy.connect(user1).upgradeTo(await logicV2.getAddress())
+    ).to.be.revertedWith("Not upgrader");
+  });
+
+  it("user with UPGRADER_ROLE can upgrade and Upgraded event is emitted", async function () {
+    const upgraderRole = await access.UPGRADER_ROLE();
+    await access.assignRole(upgraderRole, upgrader.address);
+    await expect(
+      proxy.connect(upgrader).upgradeTo(await logicV2.getAddress())
+    ).to.emit(proxy, "Upgraded");
+  });
+
+  it("after upgrade, role state is preserved (storage in proxy)", async function () {
+    const registrarRole = await access.REGISTRAR_ROLE();
+    const upgraderRole  = await access.UPGRADER_ROLE();
+
+    await access.assignRole(registrarRole, user1.address);
+    await access.assignRole(upgraderRole,  upgrader.address);
+
+    await proxy.connect(upgrader).upgradeTo(await logicV2.getAddress());
+
+    // roles must still be set â€” storage lives in proxy, not in logic
+    expect(await access.hasRole(registrarRole, user1.address)).to.equal(true);
+    expect(await access.hasRole(upgraderRole,  upgrader.address)).to.equal(true);
+  });
+});
+
+
+
+--- FILE: C:\Users\sergi\Desktop\BachelorDegree\voting-contracts\test\audit\AuditTrail.test.js ---
+
+const { expect } = require("chai");
+const { ethers } = require("hardhat");
+const { anyValue } = require("@nomicfoundation/hardhat-chai-matchers/withArgs");
+
+describe("AuditTrail", function () {
+  let owner, registrar, auditor, stranger;
+  let rbac, auditTrail;
+
+  beforeEach(async function () {
+    [owner, registrar, auditor, stranger] = await ethers.getSigners();
+
+    const Logic = await ethers.getContractFactory(
+      "contracts/access/RoleBasedAccess.sol:RoleBasedAccessLogicV1"
+    );
+    const logic = await Logic.deploy();
+    await logic.waitForDeployment();
+
+    const RBACProxy = await ethers.getContractFactory(
+      "contracts/access/RoleBasedAccessProxy.sol:RoleBasedAccessProxy"
+    );
+    const rbacProxy = await RBACProxy.deploy(await logic.getAddress(), owner.address);
+    await rbacProxy.waitForDeployment();
+
+    rbac = await ethers.getContractAt(
+      "contracts/access/IRoleBasedAccess.sol:IRoleBasedAccess",
+      await rbacProxy.getAddress()
+    );
+
+    auditTrail = await (await ethers.getContractFactory("AuditTrail"))
+      .deploy(await rbacProxy.getAddress());
+    await auditTrail.waitForDeployment();
+
+    await rbac.assignRole(await rbac.REGISTRAR_ROLE(), registrar.address);
+    await rbac.assignRole(await rbac.AUDITOR_ROLE(),   auditor.address);
+  });
+
+  // â”€â”€ Authorization â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+
+  it("registrar can logAction", async function () {
+    const code  = ethers.encodeBytes32String("REG_ACTION");
+    const refId = ethers.encodeBytes32String("REF_1");
+    await expect(auditTrail.connect(registrar).logAction(code, refId))
+      .to.emit(auditTrail, "SystemAction");
+  });
+
+  it("auditor can logAction", async function () {
+    const code  = ethers.encodeBytes32String("AUDIT_LOG");
+    const refId = ethers.encodeBytes32String("REF_2");
+    await expect(auditTrail.connect(auditor).logAction(code, refId))
+      .to.emit(auditTrail, "SystemAction");
+  });
+
+  it("admin (owner) can logAction", async function () {
+    const code  = ethers.encodeBytes32String("ADMIN_LOG");
+    const refId = ethers.encodeBytes32String("REF_3");
+    await expect(auditTrail.connect(owner).logAction(code, refId))
+      .to.emit(auditTrail, "SystemAction");
+  });
+
+  it("account with no role cannot logAction â€” reverts 'Not authorized to log'", async function () {
+    const code  = ethers.encodeBytes32String("BAD");
+    const refId = ethers.encodeBytes32String("0");
+    await expect(
+      auditTrail.connect(stranger).logAction(code, refId)
+    ).to.be.revertedWith("Not authorized to log");
+  });
+
+  it("revoking AUDITOR_ROLE blocks future logging", async function () {
+    const code  = ethers.encodeBytes32String("REVOKE_TEST");
+    const refId = ethers.encodeBytes32String("0");
+
+    await auditTrail.connect(auditor).logAction(code, refId); // still works
+
+    await rbac.deleteRole(await rbac.AUDITOR_ROLE(), auditor.address);
+
+    await expect(
+      auditTrail.connect(auditor).logAction(code, refId)
+    ).to.be.revertedWith("Not authorized to log");
+  });
+
+  // â”€â”€ SystemAction event contents â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+
+  it("SystemAction event records caller, tx.origin, actionCode, refId", async function () {
+    const code  = ethers.encodeBytes32String("SNAPSHOT");
+    const refId = ethers.encodeBytes32String("ELECTION_42");
+
+    // For an EOA call: caller == tx.origin == registrar.address
+    await expect(auditTrail.connect(registrar).logAction(code, refId))
+      .to.emit(auditTrail, "SystemAction")
+      .withArgs(
+        registrar.address, // caller  (msg.sender)
+        registrar.address, // actor   (tx.origin â€” same as msg.sender for direct EOA call)
+        code,
+        refId,
+        anyValue           // block.timestamp
+      );
+  });
+
+  it("rbacProxy address is stored and publicly readable", async function () {
+    expect(await auditTrail.rbacProxy()).to.not.equal(ethers.ZeroAddress);
+  });
+});
+
+
+
+--- FILE: C:\Users\sergi\Desktop\BachelorDegree\voting-contracts\test\ballot\Ballot.test.js ---
+
+const { expect } = require("chai");
+const { ethers } = require("hardhat");
+
+// â”€â”€â”€ Merkle helpers â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// Matches the exact algorithm in VoterRegistry.verifyProof().
+function makeLeaf(index, voterHash) {
+  return ethers.keccak256(ethers.solidityPacked(["uint256", "bytes32"], [index, voterHash]));
+}
+function sortedHash(a, b) {
+  return BigInt(a) <= BigInt(b)
+    ? ethers.keccak256(ethers.concat([a, b]))
+    : ethers.keccak256(ethers.concat([b, a]));
+}
+// Build a 2-leaf Merkle tree for voter at index 0.
+// Returns { root, proof } ready to pass into castVote / vote.
+function buildTree(voterHash) {
+  const leaf0 = makeLeaf(0, voterHash);
+  const leaf1 = makeLeaf(1, voterHash); // dummy second leaf
+  const root  = sortedHash(leaf0, leaf1);
+  return { root, proof: [leaf1] };
+}
+
+describe("Ballot", function () {
+  let owner, registrar, voter, stranger;
+  let rbac, auditTrail, voterRegistry, candidateRegistry, ballot;
+
+  const electionId = 1;
+  const CANDIDATE_ID = 1; // first candidate auto-assigned id
+
+  beforeEach(async function () {
+    [owner, registrar, voter, stranger] = await ethers.getSigners();
+
+    // â”€â”€ RBAC â”€â”€
+    const Logic = await ethers.getContractFactory(
+      "contracts/access/RoleBasedAccess.sol:RoleBasedAccessLogicV1"
+    );
+    const logic = await Logic.deploy();
+    await logic.waitForDeployment();
+
+    const RBACProxy = await ethers.getContractFactory(
+      "contracts/access/RoleBasedAccessProxy.sol:RoleBasedAccessProxy"
+    );
+    const rbacProxy = await RBACProxy.deploy(await logic.getAddress(), owner.address);
+    await rbacProxy.waitForDeployment();
+
+    rbac = await ethers.getContractAt(
+      "contracts/access/IRoleBasedAccess.sol:IRoleBasedAccess",
+      await rbacProxy.getAddress()
+    );
+
+    // â”€â”€ Supporting contracts â”€â”€
+    auditTrail = await (await ethers.getContractFactory("AuditTrail"))
+      .deploy(await rbacProxy.getAddress());
+    await auditTrail.waitForDeployment();
+
+    voterRegistry = await (await ethers.getContractFactory("VoterRegistry"))
+      .deploy(await rbacProxy.getAddress(), await auditTrail.getAddress());
+    await voterRegistry.waitForDeployment();
+
+    candidateRegistry = await (await ethers.getContractFactory("CandidateRegistry"))
+      .deploy(await rbacProxy.getAddress(), await auditTrail.getAddress());
+    await candidateRegistry.waitForDeployment();
+
+    ballot = await (await ethers.getContractFactory("Ballot")).deploy(
+      electionId,
+      await rbacProxy.getAddress(),
+      await voterRegistry.getAddress(),
+      await candidateRegistry.getAddress(),
+      await auditTrail.getAddress(),
+      ethers.ZeroAddress  // no incremental aggregation in unit tests
+    );
+    await ballot.waitForDeployment();
+
+    // â”€â”€ Role grants â”€â”€
+    // Human roles
+    const REGISTRAR = await rbac.REGISTRAR_ROLE();
+    const AUDITOR   = await rbac.AUDITOR_ROLE();
+    await rbac.assignRole(REGISTRAR, registrar.address);
+    // Contract roles:
+    //  VoterRegistry & CandidateRegistry call logAction â†’ need REGISTRAR
+    //  Ballot calls logAction (open/close/castVote) â†’ need AUDITOR
+    await rbac.assignRole(REGISTRAR, await voterRegistry.getAddress());
+    await rbac.assignRole(REGISTRAR, await candidateRegistry.getAddress());
+    await rbac.assignRole(AUDITOR,   await ballot.getAddress());
+
+    // â”€â”€ Seed data â”€â”€
+    await candidateRegistry.connect(registrar).addCandidate("Party A", ["Alice"]);
+    await candidateRegistry.connect(registrar).snapshot(electionId);
+  });
+
+  // â”€â”€ open / close â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+
+  it("registrar can open a ballot and BallotOpened is emitted", async function () {
+    await expect(ballot.connect(registrar).open()).to.emit(ballot, "BallotOpened");
+    expect(await ballot.isOpen()).to.equal(true);
+  });
+
+  it("registrar can close an open ballot and BallotClosed is emitted", async function () {
+    await ballot.connect(registrar).open();
+    await expect(ballot.connect(registrar).close()).to.emit(ballot, "BallotClosed");
+    expect(await ballot.isOpen()).to.equal(false);
+  });
+
+  it("stranger cannot open a ballot", async function () {
+    await expect(ballot.connect(stranger).open()).to.be.revertedWith("Not authorized");
+  });
+
+  it("stranger cannot close a ballot", async function () {
+    await ballot.connect(registrar).open();
+    await expect(ballot.connect(stranger).close()).to.be.revertedWith("Not authorized");
+  });
+
+  it("admin (owner) can also open and close", async function () {
+    await expect(ballot.connect(owner).open()).to.emit(ballot, "BallotOpened");
+    await expect(ballot.connect(owner).close()).to.emit(ballot, "BallotClosed");
+  });
+
+  // â”€â”€ castVote â€” happy path â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+
+  it("happy path: open â†’ snapshot â†’ vote â†’ tally increments", async function () {
+    await ballot.connect(registrar).open();
+
+    const voterHash = ethers.keccak256(ethers.toUtf8Bytes("voter-alice"));
+    const { root, proof } = buildTree(voterHash);
+    await voterRegistry.connect(registrar).snapshot(electionId, root);
+
+    await expect(ballot.connect(voter).castVote(0, voterHash, proof, CANDIDATE_ID))
+      .to.emit(ballot, "VoteCast")
+      .withArgs(voter.address, CANDIDATE_ID);
+
+    expect(await ballot.getVoteCount(CANDIDATE_ID)).to.equal(1);
+  });
+
+  it("two different voters each cast one vote â€” tally = 2", async function () {
+    await ballot.connect(registrar).open();
+
+    // voter 0
+    const hash0 = ethers.keccak256(ethers.toUtf8Bytes("voter-0"));
+    const leaf0  = makeLeaf(0, hash0);
+    // voter 1
+    const hash1  = ethers.keccak256(ethers.toUtf8Bytes("voter-1"));
+    const leaf1  = makeLeaf(1, hash1);
+    const root   = sortedHash(leaf0, leaf1);
+
+    await voterRegistry.connect(registrar).snapshot(electionId, root);
+
+    await ballot.connect(voter).castVote(0, hash0, [leaf1], CANDIDATE_ID);
+    await ballot.connect(stranger).castVote(1, hash1, [leaf0], CANDIDATE_ID);
+
+    expect(await ballot.getVoteCount(CANDIDATE_ID)).to.equal(2);
+  });
+
+  it("VoteCast event contains correct voter address and candidateId", async function () {
+    await ballot.connect(registrar).open();
+    const voterHash = ethers.keccak256(ethers.toUtf8Bytes("v"));
+    const { root, proof } = buildTree(voterHash);
+    await voterRegistry.connect(registrar).snapshot(electionId, root);
+
+    await expect(ballot.connect(voter).castVote(0, voterHash, proof, CANDIDATE_ID))
+      .to.emit(ballot, "VoteCast")
+      .withArgs(voter.address, CANDIDATE_ID);
+  });
+
+  // â”€â”€ castVote â€” rejection cases â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+
+  it("reverts when ballot is closed", async function () {
+    const voterHash = ethers.keccak256(ethers.toUtf8Bytes("voter"));
+    await expect(
+      ballot.castVote(0, voterHash, [], CANDIDATE_ID)
+    ).to.be.revertedWith("Ballot closed");
+  });
+
+  it("reverts when voter submits an invalid Merkle proof", async function () {
+    await ballot.connect(registrar).open();
+    const voterHash = ethers.keccak256(ethers.toUtf8Bytes("voter"));
+    const { root }  = buildTree(voterHash);
+    await voterRegistry.connect(registrar).snapshot(electionId, root);
+
+    const badProof = [ethers.keccak256(ethers.toUtf8Bytes("wrong"))];
+    await expect(
+      ballot.castVote(0, voterHash, badProof, CANDIDATE_ID)
+    ).to.be.revertedWith("Not eligible");
+  });
+
+  it("reverts on double vote by same voter index", async function () {
+    await ballot.connect(registrar).open();
+    const voterHash = ethers.keccak256(ethers.toUtf8Bytes("voter"));
+    const { root, proof } = buildTree(voterHash);
+    await voterRegistry.connect(registrar).snapshot(electionId, root);
+
+    await ballot.castVote(0, voterHash, proof, CANDIDATE_ID);
+    await expect(
+      ballot.castVote(0, voterHash, proof, CANDIDATE_ID)
+    ).to.be.revertedWith("Already voted");
+  });
+
+  it("reverts when candidateId is not in the election snapshot", async function () {
+    await ballot.connect(registrar).open();
+    const voterHash = ethers.keccak256(ethers.toUtf8Bytes("voter"));
+    const { root, proof } = buildTree(voterHash);
+    await voterRegistry.connect(registrar).snapshot(electionId, root);
+
+    await expect(
+      ballot.castVote(0, voterHash, proof, 999)
+    ).to.be.revertedWith("Invalid candidate");
+  });
+
+  it("vote is rejected if voter snapshot not taken yet", async function () {
+    await ballot.connect(registrar).open();
+    const voterHash = ethers.keccak256(ethers.toUtf8Bytes("voter"));
+    // no snapshot called â†’ root is zero â†’ verifyProof reverts
+    await expect(
+      ballot.castVote(0, voterHash, [], CANDIDATE_ID)
+    ).to.be.revertedWith("No snapshot");
+  });
+
+  // â”€â”€ electionId â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+
+  it("electionId is immutable and readable", async function () {
+    expect(await ballot.electionId()).to.equal(electionId);
+  });
+});
+
+
+
+--- FILE: C:\Users\sergi\Desktop\BachelorDegree\voting-contracts\test\ballot\BallotFactory.test.js ---
+
+const { expect } = require("chai");
+const { ethers } = require("hardhat");
+
+describe("BallotFactory", function () {
+  let owner, registrar;
+  let rbac, auditTrail, voterRegistry, candidateRegistry, ballotFactory;
+
+  beforeEach(async function () {
+    [owner, registrar] = await ethers.getSigners();
+
+    // â”€â”€ RBAC â”€â”€
+    const Logic = await ethers.getContractFactory(
+      "contracts/access/RoleBasedAccess.sol:RoleBasedAccessLogicV1"
+    );
+    const logic = await Logic.deploy();
+    await logic.waitForDeployment();
+
+    const RBACProxy = await ethers.getContractFactory(
+      "contracts/access/RoleBasedAccessProxy.sol:RoleBasedAccessProxy"
+    );
+    const rbacProxy = await RBACProxy.deploy(await logic.getAddress(), owner.address);
+    await rbacProxy.waitForDeployment();
+
+    rbac = await ethers.getContractAt(
+      "contracts/access/IRoleBasedAccess.sol:IRoleBasedAccess",
+      await rbacProxy.getAddress()
+    );
+
+    // â”€â”€ Supporting contracts â”€â”€
+    auditTrail = await (await ethers.getContractFactory("AuditTrail"))
+      .deploy(await rbacProxy.getAddress());
+    await auditTrail.waitForDeployment();
+
+    voterRegistry = await (await ethers.getContractFactory("VoterRegistry"))
+      .deploy(await rbacProxy.getAddress(), await auditTrail.getAddress());
+    await voterRegistry.waitForDeployment();
+
+    candidateRegistry = await (await ethers.getContractFactory("CandidateRegistry"))
+      .deploy(await rbacProxy.getAddress(), await auditTrail.getAddress());
+    await candidateRegistry.waitForDeployment();
+
+    ballotFactory = await (await ethers.getContractFactory("BallotFactory")).deploy(
+      await voterRegistry.getAddress(),
+      await candidateRegistry.getAddress(),
+      await rbacProxy.getAddress(),
+      await auditTrail.getAddress()
+    );
+    await ballotFactory.waitForDeployment();
+
+    const REGISTRAR = await rbac.REGISTRAR_ROLE();
+    await rbac.assignRole(REGISTRAR, registrar.address);
+  });
+
+  // â”€â”€ deployBallot â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+
+  it("deployBallot returns a non-zero address", async function () {
+    const addr = await ballotFactory.deployBallot.staticCall(1, 0);
+    expect(addr).to.not.equal(ethers.ZeroAddress);
+  });
+
+  it("deployBallot stores the ballot address retrievable via getBallot", async function () {
+    await ballotFactory.deployBallot(1, 0);
+    const stored = await ballotFactory.getBallot(1, 0);
+    expect(stored).to.not.equal(ethers.ZeroAddress);
+  });
+
+  it("BallotDeployed event is emitted with correct electionId and shardId", async function () {
+    await expect(ballotFactory.deployBallot(1, 0))
+      .to.emit(ballotFactory, "BallotDeployed")
+      .withArgs(1, 0, (addr) => addr !== ethers.ZeroAddress);
+  });
+
+  it("deploying the same (electionId, shardId) twice reverts with 'Ballot exists'", async function () {
+    await ballotFactory.deployBallot(1, 0);
+    await expect(
+      ballotFactory.deployBallot(1, 0)
+    ).to.be.revertedWith("Ballot exists");
+  });
+
+  it("different shardIds for same election each get distinct ballot addresses", async function () {
+    await ballotFactory.deployBallot(1, 0);
+    await ballotFactory.deployBallot(1, 1);
+    const shard0 = await ballotFactory.getBallot(1, 0);
+    const shard1 = await ballotFactory.getBallot(1, 1);
+    expect(shard0).to.not.equal(shard1);
+  });
+
+  it("different electionIds get distinct ballot addresses", async function () {
+    await ballotFactory.deployBallot(1, 0);
+    await ballotFactory.deployBallot(2, 0);
+    const ballot1 = await ballotFactory.getBallot(1, 0);
+    const ballot2 = await ballotFactory.getBallot(2, 0);
+    expect(ballot1).to.not.equal(ballot2);
+  });
+
+  // â”€â”€ getShardCount â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+
+  it("getShardCount returns 0 before any ballot is deployed", async function () {
+    expect(await ballotFactory.getShardCount(1)).to.equal(0);
+  });
+
+  it("getShardCount increments correctly as shards are deployed", async function () {
+    await ballotFactory.deployBallot(1, 0);
+    expect(await ballotFactory.getShardCount(1)).to.equal(1);
+    await ballotFactory.deployBallot(1, 1);
+    expect(await ballotFactory.getShardCount(1)).to.equal(2);
+    await ballotFactory.deployBallot(1, 2);
+    expect(await ballotFactory.getShardCount(1)).to.equal(3);
+  });
+
+  it("shard counts are independent across different elections", async function () {
+    await ballotFactory.deployBallot(1, 0);
+    await ballotFactory.deployBallot(1, 1);
+    await ballotFactory.deployBallot(2, 0);
+    expect(await ballotFactory.getShardCount(1)).to.equal(2);
+    expect(await ballotFactory.getShardCount(2)).to.equal(1);
+  });
+
+  // â”€â”€ Deployed ballot properties â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+
+  it("deployed Ballot has the correct electionId", async function () {
+    await ballotFactory.deployBallot(42, 0);
+    const ballotAddr = await ballotFactory.getBallot(42, 0);
+    const ballot = await ethers.getContractAt("Ballot", ballotAddr);
+    expect(await ballot.electionId()).to.equal(42);
+  });
+
+  it("getBallot returns zero address for undeployed shard", async function () {
+    expect(await ballotFactory.getBallot(99, 0)).to.equal(ethers.ZeroAddress);
+  });
+});
+
+
+
+--- FILE: C:\Users\sergi\Desktop\BachelorDegree\voting-contracts\test\candidate_registry\CandidateRegistry.test.js ---
+
+const { expect } = require("chai");
+const { ethers } = require("hardhat");
+
+describe("CandidateRegistry", function () {
+  let owner, registrar, stranger;
+  let rbac, auditTrail, candidateRegistry;
+
+  const electionId = 1;
+
+  beforeEach(async function () {
+    [owner, registrar, stranger] = await ethers.getSigners();
+
+    const Logic = await ethers.getContractFactory(
+      "contracts/access/RoleBasedAccess.sol:RoleBasedAccessLogicV1"
+    );
+    const logic = await Logic.deploy();
+    await logic.waitForDeployment();
+
+    const RBACProxy = await ethers.getContractFactory(
+      "contracts/access/RoleBasedAccessProxy.sol:RoleBasedAccessProxy"
+    );
+    const rbacProxy = await RBACProxy.deploy(await logic.getAddress(), owner.address);
+    await rbacProxy.waitForDeployment();
+
+    rbac = await ethers.getContractAt(
+      "contracts/access/IRoleBasedAccess.sol:IRoleBasedAccess",
+      await rbacProxy.getAddress()
+    );
+
+    auditTrail = await (await ethers.getContractFactory("AuditTrail"))
+      .deploy(await rbacProxy.getAddress());
+    await auditTrail.waitForDeployment();
+
+    candidateRegistry = await (await ethers.getContractFactory("CandidateRegistry"))
+      .deploy(await rbacProxy.getAddress(), await auditTrail.getAddress());
+    await candidateRegistry.waitForDeployment();
+
+    // Human registrar
+    const REGISTRAR = await rbac.REGISTRAR_ROLE();
+    await rbac.assignRole(REGISTRAR, registrar.address);
+    // CandidateRegistry calls logAction inside add/remove/snapshot â†’ needs role
+    await rbac.assignRole(REGISTRAR, await candidateRegistry.getAddress());
+  });
+
+  // â”€â”€ addCandidate â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+
+  it("registrar can add a single-name candidate; id starts at 1", async function () {
+    await candidateRegistry.connect(registrar).addCandidate("Party A", ["Alice"]);
+    expect(await candidateRegistry.getParty(1)).to.equal("Party A");
+    const names = await candidateRegistry.getCandidateNames(1);
+    expect(names.length).to.equal(1);
+    expect(names[0]).to.equal("Alice");
+  });
+
+  it("registrar can add a multi-name candidate (parliamentary list)", async function () {
+    await candidateRegistry.connect(registrar).addCandidate("Party B", ["Bob", "Carol", "Dave"]);
+    const names = await candidateRegistry.getCandidateNames(1);
+    expect(names.length).to.equal(3);
+    expect(names[1]).to.equal("Carol");
+  });
+
+  it("ids auto-increment across multiple adds", async function () {
+    await candidateRegistry.connect(registrar).addCandidate("P1", ["Alice"]);
+    await candidateRegistry.connect(registrar).addCandidate("P2", ["Bob"]);
+    expect(await candidateRegistry.getParty(1)).to.equal("P1");
+    expect(await candidateRegistry.getParty(2)).to.equal("P2");
+  });
+
+  it("CandidateAdded event is emitted", async function () {
+    await expect(
+      candidateRegistry.connect(registrar).addCandidate("Party A", ["Alice"])
+    ).to.emit(candidateRegistry, "CandidateAdded");
+  });
+
+  it("stranger cannot addCandidate", async function () {
+    await expect(
+      candidateRegistry.connect(stranger).addCandidate("X", ["Y"])
+    ).to.be.revertedWith("Not authorized");
+  });
+
+  it("owner (admin) can also addCandidate", async function () {
+    await candidateRegistry.connect(owner).addCandidate("Party A", ["Alice"]);
+    expect(await candidateRegistry.getParty(1)).to.equal("Party A");
+  });
+
+  it("empty names array is rejected", async function () {
+    await expect(
+      candidateRegistry.connect(registrar).addCandidate("P", [])
+    ).to.be.revertedWith("Empty list");
+  });
+
+  // â”€â”€ removeCandidate â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+
+  it("registrar can remove an existing candidate", async function () {
+    await candidateRegistry.connect(registrar).addCandidate("Party A", ["Alice"]);
+    await candidateRegistry.connect(registrar).removeCandidate(1);
+    expect(await candidateRegistry.getParty(1)).to.equal(""); // deleted
+  });
+
+  it("removing a non-existent candidate reverts", async function () {
+    await expect(
+      candidateRegistry.connect(registrar).removeCandidate(999)
+    ).to.be.revertedWith("Not found");
+  });
+
+  it("stranger cannot removeCandidate", async function () {
+    await candidateRegistry.connect(registrar).addCandidate("Party A", ["Alice"]);
+    await expect(
+      candidateRegistry.connect(stranger).removeCandidate(1)
+    ).to.be.revertedWith("Not authorized");
+  });
+
+  it("CandidateRemoved event is emitted", async function () {
+    await candidateRegistry.connect(registrar).addCandidate("P", ["A"]);
+    await expect(
+      candidateRegistry.connect(registrar).removeCandidate(1)
+    ).to.emit(candidateRegistry, "CandidateRemoved");
+  });
+
+  // â”€â”€ snapshot â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+
+  it("snapshot records all current candidate ids for the election", async function () {
+    await candidateRegistry.connect(registrar).addCandidate("Party A", ["Alice"]);
+    await candidateRegistry.connect(registrar).addCandidate("Party B", ["Bob"]);
+    await candidateRegistry.connect(registrar).snapshot(electionId);
+
+    const ids = await candidateRegistry.getCandidates(electionId);
+    expect(ids.length).to.equal(2);
+    expect(ids[0]).to.equal(1n);
+    expect(ids[1]).to.equal(2n);
+  });
+
+  it("snapshot after removeCandidate does not include removed candidate", async function () {
+    await candidateRegistry.connect(registrar).addCandidate("P1", ["Alice"]);
+    await candidateRegistry.connect(registrar).addCandidate("P2", ["Bob"]);
+    await candidateRegistry.connect(registrar).removeCandidate(1);
+    await candidateRegistry.connect(registrar).snapshot(electionId);
+
+    const ids = await candidateRegistry.getCandidates(electionId);
+    expect(ids.length).to.equal(1);
+    expect(ids[0]).to.equal(2n);
+  });
+
+  it("snapshotting same election twice reverts", async function () {
+    await candidateRegistry.connect(registrar).addCandidate("P", ["A"]);
+    await candidateRegistry.connect(registrar).snapshot(electionId);
+    await expect(
+      candidateRegistry.connect(registrar).snapshot(electionId)
+    ).to.be.revertedWith("Already snapshotted");
+  });
+
+  it("stranger cannot call snapshot", async function () {
+    await expect(
+      candidateRegistry.connect(stranger).snapshot(electionId)
+    ).to.be.revertedWith("Not authorized");
+  });
+
+  it("getCandidates returns empty array for unseen electionId", async function () {
+    const ids = await candidateRegistry.getCandidates(42);
+    expect(ids.length).to.equal(0);
+  });
+});
+
+
+
+--- FILE: C:\Users\sergi\Desktop\BachelorDegree\voting-contracts\test\election_manager\ElectionManager.test.js ---
+
+const { expect } = require("chai");
+const { ethers } = require("hardhat");
+
+// â”€â”€â”€ Merkle helpers (mirror of VoterRegistry.verifyProof) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+function makeLeaf(index, voterHash) {
+  return ethers.keccak256(ethers.solidityPacked(["uint256", "bytes32"], [index, voterHash]));
+}
+function sortedHash(a, b) {
+  return BigInt(a) <= BigInt(b)
+    ? ethers.keccak256(ethers.concat([a, b]))
+    : ethers.keccak256(ethers.concat([b, a]));
+}
+function buildTree(voterHash) {
+  const leaf0 = makeLeaf(0, voterHash);
+  const leaf1 = makeLeaf(1, voterHash);
+  return { root: sortedHash(leaf0, leaf1), leaf0, leaf1 };
+}
+
+describe("ElectionManager", function () {
+  let owner, registrar, voter;
+  let rbac, auditTrail, voterRegistry, candidateRegistry;
+  let ballotFactory, tallyVerifier, electionManager;
+
+  beforeEach(async function () {
+    [owner, registrar, voter] = await ethers.getSigners();
+
+    // â”€â”€ RBAC â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+    const Logic = await ethers.getContractFactory(
+      "contracts/access/RoleBasedAccess.sol:RoleBasedAccessLogicV1"
+    );
+    const logic = await Logic.deploy();
+    await logic.waitForDeployment();
+
+    const RBACProxy = await ethers.getContractFactory(
+      "contracts/access/RoleBasedAccessProxy.sol:RoleBasedAccessProxy"
+    );
+    const rbacProxy = await RBACProxy.deploy(await logic.getAddress(), owner.address);
+    await rbacProxy.waitForDeployment();
+
+    rbac = await ethers.getContractAt(
+      "contracts/access/IRoleBasedAccess.sol:IRoleBasedAccess",
+      await rbacProxy.getAddress()
+    );
+
+    // â”€â”€ Core contracts â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+    auditTrail = await (await ethers.getContractFactory("AuditTrail"))
+      .deploy(await rbacProxy.getAddress());
+    await auditTrail.waitForDeployment();
+
+    voterRegistry = await (await ethers.getContractFactory("VoterRegistry"))
+      .deploy(await rbacProxy.getAddress(), await auditTrail.getAddress());
+    await voterRegistry.waitForDeployment();
+
+    candidateRegistry = await (await ethers.getContractFactory("CandidateRegistry"))
+      .deploy(await rbacProxy.getAddress(), await auditTrail.getAddress());
+    await candidateRegistry.waitForDeployment();
+
+    tallyVerifier = await (await ethers.getContractFactory("TallyVerifier")).deploy();
+    await tallyVerifier.waitForDeployment();
+
+    ballotFactory = await (await ethers.getContractFactory("BallotFactory")).deploy(
+      await voterRegistry.getAddress(),
+      await candidateRegistry.getAddress(),
+      await rbacProxy.getAddress(),
+      await auditTrail.getAddress()
+    );
+    await ballotFactory.waitForDeployment();
+
+    electionManager = await (await ethers.getContractFactory("ElectionManager")).deploy(
+      await ballotFactory.getAddress(),
+      await tallyVerifier.getAddress(),
+      await rbacProxy.getAddress()
+    );
+    await electionManager.waitForDeployment();
+
+    // Wire ElectionManager into BallotFactory so deployed Ballot shards can
+    // call incrementTotal (incremental aggregation).
+    await ballotFactory.setElectionManager(await electionManager.getAddress());
+
+    // â”€â”€ Role grants â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+    const REGISTRAR = await rbac.REGISTRAR_ROLE();
+    const AUDITOR   = await rbac.AUDITOR_ROLE();
+
+    // Human roles
+    await rbac.assignRole(REGISTRAR, registrar.address);
+
+    // Contract roles:
+    //  VoterRegistry & CandidateRegistry call logAction â†’ need REGISTRAR
+    await rbac.assignRole(REGISTRAR, await voterRegistry.getAddress());
+    await rbac.assignRole(REGISTRAR, await candidateRegistry.getAddress());
+
+    // ElectionManager calls ballot.open() / ballot.close()
+    //   â†’ Ballot._hasRegistrarOrAdmin(msg.sender) checks ElectionManager â†’ needs REGISTRAR
+    await rbac.assignRole(REGISTRAR, await electionManager.getAddress());
+  });
+
+  // Helper: creates election, grants ballot contracts AUDITOR_ROLE, returns electionId + ballot
+  async function createAndGrantBallot(name, shardCount) {
+    const AUDITOR = await rbac.AUDITOR_ROLE();
+    const tx    = await electionManager.connect(owner).createElection(name, shardCount);
+    await tx.wait();
+    const electionId = await electionManager.getElectionState(1).then(() => 1n);
+
+    // Grant AUDITOR_ROLE to every ballot so they can call auditTrail.logAction
+    for (let i = 0; i < shardCount; i++) {
+      const ballotAddr = await electionManager.getBallot(1, i);
+      await rbac.assignRole(AUDITOR, ballotAddr);
+    }
+    return electionId;
+  }
+
+  // â”€â”€ createElection â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+
+  it("only admin can createElection â€” non-admin reverts", async function () {
+    await expect(
+      electionManager.connect(registrar).createElection("Test", 1)
+    ).to.be.revertedWith("Not authorized");
+  });
+
+  it("zero shardCount is rejected", async function () {
+    await expect(
+      electionManager.connect(owner).createElection("Test", 0)
+    ).to.be.revertedWith("Invalid shard count");
+  });
+
+  it("createElection deploys the correct number of shard ballots", async function () {
+    await electionManager.connect(owner).createElection("Election 1", 3);
+    // All 3 shards must exist
+    for (let i = 0; i < 3; i++) {
+      expect(await electionManager.getBallot(1, i)).to.not.equal(ethers.ZeroAddress);
+    }
+  });
+
+  it("newly created election is in Created state", async function () {
+    await electionManager.connect(owner).createElection("E1", 1);
+    // 0 = Created
+    expect(await electionManager.getElectionState(1)).to.equal(0);
+  });
+
+  // â”€â”€ startElection â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+
+  it("only admin can startElection", async function () {
+    await electionManager.connect(owner).createElection("E1", 1);
+    const AUDITOR = await rbac.AUDITOR_ROLE();
+    await rbac.assignRole(AUDITOR, await electionManager.getBallot(1, 0));
+
+    await expect(
+      electionManager.connect(registrar).startElection(1)
+    ).to.be.revertedWith("Not authorized");
+  });
+
+  it("startElection from wrong state reverts with 'Wrong state'", async function () {
+    await electionManager.connect(owner).createElection("E1", 1);
+    const AUDITOR = await rbac.AUDITOR_ROLE();
+    await rbac.assignRole(AUDITOR, await electionManager.getBallot(1, 0));
+
+    await electionManager.connect(owner).startElection(1); // â†’ Live
+    await expect(
+      electionManager.connect(owner).startElection(1)      // already Live
+    ).to.be.revertedWith("Wrong state");
+  });
+
+  it("startElection transitions state from Created to Live", async function () {
+    await createAndGrantBallot("E1", 1);
+    await electionManager.connect(owner).startElection(1);
+    // 1 = Live
+    expect(await electionManager.getElectionState(1)).to.equal(1);
+  });
+
+  it("startElection opens all shard ballots", async function () {
+    await createAndGrantBallot("E1", 2);
+    await electionManager.connect(owner).startElection(1);
+
+    for (let i = 0; i < 2; i++) {
+      const ballotAddr = await electionManager.getBallot(1, i);
+      const ballot = await ethers.getContractAt("Ballot", ballotAddr);
+      expect(await ballot.isOpen()).to.equal(true);
+    }
+  });
+
+  // â”€â”€ finalizeElection â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+
+  it("only admin can finalizeElection", async function () {
+    await createAndGrantBallot("E1", 1);
+    await electionManager.connect(owner).startElection(1);
+
+    await expect(
+      electionManager.connect(registrar).finalizeElection(1, "0x", "0x")
+    ).to.be.revertedWith("Not authorized");
+  });
+
+  it("finalizeElection before Live state reverts with 'Election not live'", async function () {
+    await createAndGrantBallot("E1", 1);
+    // still Created
+    await expect(
+      electionManager.connect(owner).finalizeElection(1, "0x", "0x")
+    ).to.be.revertedWith("Election not live");
+  });
+
+  it("finalizeElection transitions state from Live to Finalized", async function () {
+    await createAndGrantBallot("E1", 1);
+    await electionManager.connect(owner).startElection(1);
+    await electionManager.connect(owner).finalizeElection(1, "0x", "0x");
+    // 2 = Finalized
+    expect(await electionManager.getElectionState(1)).to.equal(2);
+  });
+
+  it("finalizeElection closes all shard ballots", async function () {
+    await createAndGrantBallot("E1", 2);
+    await electionManager.connect(owner).startElection(1);
+    await electionManager.connect(owner).finalizeElection(1, "0x", "0x");
+
+    for (let i = 0; i < 2; i++) {
+      const ballotAddr = await electionManager.getBallot(1, i);
+      const ballot = await ethers.getContractAt("Ballot", ballotAddr);
+      expect(await ballot.isOpen()).to.equal(false);
+    }
+  });
+
+  it("voting is rejected after finalizeElection closes the ballot", async function () {
+    await createAndGrantBallot("E1", 1);
+    await electionManager.connect(owner).startElection(1);
+    await electionManager.connect(owner).finalizeElection(1, "0x", "0x");
+
+    const ballotAddr = await electionManager.getBallot(1, 0);
+    const ballot = await ethers.getContractAt("Ballot", ballotAddr);
+    await expect(
+      ballot.castVote(0, ethers.keccak256(ethers.toUtf8Bytes("v")), [], 1)
+    ).to.be.revertedWith("Ballot closed");
+  });
+
+  // â”€â”€ Full E2E lifecycle â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+
+  it("full lifecycle: create â†’ setup â†’ start â†’ vote â†’ finalize", async function () {
+    // 1. Admin creates election with 1 shard
+    await electionManager.connect(owner).createElection("Presidential 2026", 1);
+    const ballotAddr = await electionManager.getBallot(1, 0);
+    const ballot     = await ethers.getContractAt("Ballot", ballotAddr);
+
+    // Grant ballot AUDITOR_ROLE so it can call logAction
+    await rbac.assignRole(await rbac.AUDITOR_ROLE(), ballotAddr);
+
+    // 2. Registrar adds candidates and snapshots them
+    await candidateRegistry.connect(registrar).addCandidate("Party A", ["Alice"]);
+    await candidateRegistry.connect(registrar).addCandidate("Party B", ["Bob"]);
+    await candidateRegistry.connect(registrar).snapshot(1);
+
+    // 3. Registrar builds voter Merkle tree and snapshots it
+    const voterHash = ethers.keccak256(ethers.toUtf8Bytes("voter-alice-id"));
+    const { root, leaf1 } = buildTree(voterHash);
+    await voterRegistry.connect(registrar).snapshot(1, root);
+
+    // 4. Admin starts election â†’ all ballots open
+    await electionManager.connect(owner).startElection(1);
+    expect(await ballot.isOpen()).to.equal(true);
+
+    // 5. Voter casts a valid vote for candidate 1 on shard 0
+    await ballot.connect(voter).castVote(0, voterHash, [leaf1], 1);
+    expect(await ballot.getVoteCount(1)).to.equal(1);
+
+    // 6. Same voter cannot vote again
+    await expect(
+      ballot.connect(voter).castVote(0, voterHash, [leaf1], 1)
+    ).to.be.revertedWith("Already voted");
+
+    // 7. Admin finalizes â†’ ballots close, tally verified by mock verifier
+    await electionManager.connect(owner).finalizeElection(1, "0x", "0x");
+    expect(await electionManager.getElectionState(1)).to.equal(2); // Finalized
+    expect(await ballot.isOpen()).to.equal(false);
+
+    // 8. No more votes accepted after finalization
+    const voterHash2   = ethers.keccak256(ethers.toUtf8Bytes("voter-bob-id"));
+    const { root: r2, leaf1: l2 } = buildTree(voterHash2);
+    await expect(
+      ballot.connect(voter).castVote(0, voterHash2, [l2], 2)
+    ).to.be.revertedWith("Ballot closed");
+  });
+});
+
+
+
+--- FILE: C:\Users\sergi\Desktop\BachelorDegree\voting-contracts\test\voter_registry\VoterRegistry.test.js ---
+
+const { expect } = require("chai");
+const { ethers } = require("hardhat");
+
+// â”€â”€â”€ Merkle helpers (mirror of VoterRegistry.verifyProof) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+function makeLeaf(index, voterHash) {
+  return ethers.keccak256(ethers.solidityPacked(["uint256", "bytes32"], [index, voterHash]));
+}
+function sortedHash(a, b) {
+  return BigInt(a) <= BigInt(b)
+    ? ethers.keccak256(ethers.concat([a, b]))
+    : ethers.keccak256(ethers.concat([b, a]));
+}
+function buildTree(voterHash) {
+  const leaf0 = makeLeaf(0, voterHash);
+  const leaf1 = makeLeaf(1, voterHash);
+  return { root: sortedHash(leaf0, leaf1), leaf0, leaf1 };
+}
+
+describe("VoterRegistry", function () {
+  let owner, registrar, stranger;
+  let rbac, auditTrail, voterRegistry;
+
+  const electionId = 1;
+
+  beforeEach(async function () {
+    [owner, registrar, stranger] = await ethers.getSigners();
+
+    const Logic = await ethers.getContractFactory(
+      "contracts/access/RoleBasedAccess.sol:RoleBasedAccessLogicV1"
+    );
+    const logic = await Logic.deploy();
+    await logic.waitForDeployment();
+
+    const RBACProxy = await ethers.getContractFactory(
+      "contracts/access/RoleBasedAccessProxy.sol:RoleBasedAccessProxy"
+    );
+    const rbacProxy = await RBACProxy.deploy(await logic.getAddress(), owner.address);
+    await rbacProxy.waitForDeployment();
+
+    rbac = await ethers.getContractAt(
+      "contracts/access/IRoleBasedAccess.sol:IRoleBasedAccess",
+      await rbacProxy.getAddress()
+    );
+
+    auditTrail = await (await ethers.getContractFactory("AuditTrail"))
+      .deploy(await rbacProxy.getAddress());
+    await auditTrail.waitForDeployment();
+
+    voterRegistry = await (await ethers.getContractFactory("VoterRegistry"))
+      .deploy(await rbacProxy.getAddress(), await auditTrail.getAddress());
+    await voterRegistry.waitForDeployment();
+
+    // Human registrar
+    const REGISTRAR = await rbac.REGISTRAR_ROLE();
+    await rbac.assignRole(REGISTRAR, registrar.address);
+    // VoterRegistry calls logAction in snapshot() â†’ needs role in AuditTrail
+    await rbac.assignRole(REGISTRAR, await voterRegistry.getAddress());
+  });
+
+  // â”€â”€ snapshot â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+
+  it("registrar can snapshot a Merkle root for an election", async function () {
+    const voterHash = ethers.keccak256(ethers.toUtf8Bytes("voter"));
+    const { root } = buildTree(voterHash);
+    await expect(voterRegistry.connect(registrar).snapshot(electionId, root))
+      .to.emit(voterRegistry, "SnapshotTaken")
+      .withArgs(electionId, root, (await ethers.provider.getBlock("latest")).timestamp + 1);
+    expect(await voterRegistry.getSnapshot(electionId)).to.equal(root);
+  });
+
+  it("snapshotting the same election twice reverts", async function () {
+    const voterHash = ethers.keccak256(ethers.toUtf8Bytes("v"));
+    const { root } = buildTree(voterHash);
+    await voterRegistry.connect(registrar).snapshot(electionId, root);
+    await expect(
+      voterRegistry.connect(registrar).snapshot(electionId, root)
+    ).to.be.revertedWith("Already snapshotted");
+  });
+
+  it("stranger cannot snapshot", async function () {
+    const { root } = buildTree(ethers.keccak256(ethers.toUtf8Bytes("v")));
+    await expect(
+      voterRegistry.connect(stranger).snapshot(electionId, root)
+    ).to.be.revertedWith("Not authorized");
+  });
+
+  it("getSnapshot returns zero bytes32 for unknown election", async function () {
+    expect(await voterRegistry.getSnapshot(999)).to.equal(ethers.ZeroHash);
+  });
+
+  // â”€â”€ vote â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+
+  it("eligible voter (index 0) can vote and Voted event is emitted", async function () {
+    const voterHash = ethers.keccak256(ethers.toUtf8Bytes("voter"));
+    const { root, leaf1 } = buildTree(voterHash);
+    await voterRegistry.connect(registrar).snapshot(electionId, root);
+
+    await expect(voterRegistry.vote(electionId, 0, voterHash, [leaf1]))
+      .to.emit(voterRegistry, "Voted")
+      .withArgs(electionId, 0, voterHash);
+  });
+
+  it("hasVoted returns true after a successful vote", async function () {
+    const voterHash = ethers.keccak256(ethers.toUtf8Bytes("voter"));
+    const { root, leaf1 } = buildTree(voterHash);
+    await voterRegistry.connect(registrar).snapshot(electionId, root);
+    await voterRegistry.vote(electionId, 0, voterHash, [leaf1]);
+    expect(await voterRegistry.hasVoted(electionId, 0)).to.equal(true);
+  });
+
+  it("hasVoted returns false for voter that has not voted", async function () {
+    expect(await voterRegistry.hasVoted(electionId, 0)).to.equal(false);
+  });
+
+  it("second vote with same index reverts with 'Already voted'", async function () {
+    const voterHash = ethers.keccak256(ethers.toUtf8Bytes("voter"));
+    const { root, leaf1 } = buildTree(voterHash);
+    await voterRegistry.connect(registrar).snapshot(electionId, root);
+    await voterRegistry.vote(electionId, 0, voterHash, [leaf1]);
+    await expect(
+      voterRegistry.vote(electionId, 0, voterHash, [leaf1])
+    ).to.be.revertedWith("Already voted");
+  });
+
+  it("ineligible voter (bad proof) is rejected", async function () {
+    const voterHash = ethers.keccak256(ethers.toUtf8Bytes("voter"));
+    const { root } = buildTree(voterHash);
+    await voterRegistry.connect(registrar).snapshot(electionId, root);
+
+    const badProof = [ethers.keccak256(ethers.toUtf8Bytes("wrong"))];
+    await expect(
+      voterRegistry.vote(electionId, 0, voterHash, badProof)
+    ).to.be.revertedWith("Not eligible");
+  });
+
+  it("voting before any snapshot reverts with 'No snapshot'", async function () {
+    const voterHash = ethers.keccak256(ethers.toUtf8Bytes("voter"));
+    await expect(
+      voterRegistry.vote(electionId, 0, voterHash, [])
+    ).to.be.revertedWith("No snapshot");
+  });
+
+  it("two voters at different indices can each vote independently", async function () {
+    const hash0 = ethers.keccak256(ethers.toUtf8Bytes("voter-0"));
+    const hash1 = ethers.keccak256(ethers.toUtf8Bytes("voter-1"));
+    const leaf0 = makeLeaf(0, hash0);
+    const leaf1 = makeLeaf(1, hash1);
+    const root  = sortedHash(leaf0, leaf1);
+
+    await voterRegistry.connect(registrar).snapshot(electionId, root);
+
+    await voterRegistry.vote(electionId, 0, hash0, [leaf1]);
+    await voterRegistry.vote(electionId, 1, hash1, [leaf0]);
+
+    expect(await voterRegistry.hasVoted(electionId, 0)).to.equal(true);
+    expect(await voterRegistry.hasVoted(electionId, 1)).to.equal(true);
+  });
+
+  // â”€â”€ verifyProof (public view) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+
+  it("verifyProof returns true for a valid (index, voterHash) pair", async function () {
+    const voterHash = ethers.keccak256(ethers.toUtf8Bytes("voter"));
+    const { root, leaf1 } = buildTree(voterHash);
+    await voterRegistry.connect(registrar).snapshot(electionId, root);
+
+    const leaf0 = makeLeaf(0, voterHash);
+    expect(await voterRegistry.verifyProof(electionId, leaf0, [leaf1])).to.equal(true);
+  });
+
+  it("verifyProof returns false for a tampered voterHash", async function () {
+    const voterHash = ethers.keccak256(ethers.toUtf8Bytes("voter"));
+    const { root, leaf1 } = buildTree(voterHash);
+    await voterRegistry.connect(registrar).snapshot(electionId, root);
+
+    const tamperedLeaf = makeLeaf(0, ethers.keccak256(ethers.toUtf8Bytes("tampered")));
+    expect(await voterRegistry.verifyProof(electionId, tamperedLeaf, [leaf1])).to.equal(false);
+  });
+});
+
+
+

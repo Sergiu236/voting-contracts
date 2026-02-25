@@ -7,6 +7,11 @@ import { ICandidateRegistry } from "../candidate_registry/ICandidateRegistry.sol
 import { IRoleBasedAccess } from "../access/IRoleBasedAccess.sol";
 import { IAuditTrail } from "../audit/IAuditTrail.sol";
 
+/// @dev Minimal interface used to notify ElectionManager of each vote cast.
+interface IElectionManagerTotals {
+    function incrementTotal(uint256 electionId, uint256 candidateId) external;
+}
+
 /// @title Ballot
 /// @notice Records votes for a single election.
 /// @dev Ballot enforces voting rules AND tallies votes per candidate.
@@ -18,6 +23,11 @@ contract Ballot is IBallot {
     address public immutable candidateRegistry;
     address public immutable auditTrail;
 
+    /// @notice Address of the ElectionManager to notify on each vote.
+    ///         address(0) means incremental aggregation is disabled (tests /
+    ///         standalone deployments that do not need it).
+    address public immutable electionManager;
+
     bool private ballotOpen;
 
     // 🔴 NEW: candidateId => votes (on-chain tally)
@@ -28,7 +38,8 @@ contract Ballot is IBallot {
         address _rbacProxy,
         address _voterRegistry,
         address _candidateRegistry,
-        address _auditTrail
+        address _auditTrail,
+        address _electionManager
     ) {
         require(_electionId != 0, "invalid electionId");
         require(_rbacProxy != address(0), "rbac zero");
@@ -41,6 +52,7 @@ contract Ballot is IBallot {
         voterRegistry = _voterRegistry;
         candidateRegistry = _candidateRegistry;
         auditTrail = _auditTrail;
+        electionManager = _electionManager; // may be address(0)
     }
 
     function open() external override {
@@ -91,6 +103,11 @@ contract Ballot is IBallot {
 
         // 🔴 NEW: on-chain tally
         voteCounts[candidateId] += 1;
+
+        // Notify ElectionManager to keep global totals up-to-date (write-time aggregation)
+        if (electionManager != address(0)) {
+            IElectionManagerTotals(electionManager).incrementTotal(electionId, candidateId);
+        }
 
         emit VoteCast(msg.sender, candidateId);
         IAuditTrail(auditTrail).logAction(bytes32("VOTE_CAST"), bytes32(electionId));

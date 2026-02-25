@@ -93,7 +93,6 @@ contract VoterRegistry is IVoterRegistry {
         votedBitmap[electionId][wordIndex] = word | mask;
 
         emit Voted(electionId, index, voterHash);
-        IAuditTrail(auditTrail).logAction(bytes32("VOTE_CAST"), bytes32(electionId));
     }
 
     /// just a helper to check if a voter index already voted or not

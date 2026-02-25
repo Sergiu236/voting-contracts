@@ -1,38 +1,25 @@
 const { expect } = require("chai");
 const { ethers } = require("hardhat");
 
-describe("CandidateRegistry (simple)", function () {
-  let owner;
-  let registrar;
-  let user;
-
-  let rbacLogic;
-  let rbacProxy;
-  let rbac;
-
-  let auditTrail;
-  let candidateRegistry;
+describe("CandidateRegistry", function () {
+  let owner, registrar, stranger;
+  let rbac, auditTrail, candidateRegistry;
 
   const electionId = 1;
 
   beforeEach(async function () {
-    [owner, registrar, user] = await ethers.getSigners();
+    [owner, registrar, stranger] = await ethers.getSigners();
 
-    // deploy RBAC logic
-    const RBACLogic = await ethers.getContractFactory(
+    const Logic = await ethers.getContractFactory(
       "contracts/access/RoleBasedAccess.sol:RoleBasedAccessLogicV1"
     );
-    rbacLogic = await RBACLogic.deploy();
-    await rbacLogic.waitForDeployment();
+    const logic = await Logic.deploy();
+    await logic.waitForDeployment();
 
-    // deploy RBAC proxy
     const RBACProxy = await ethers.getContractFactory(
       "contracts/access/RoleBasedAccessProxy.sol:RoleBasedAccessProxy"
     );
-    rbacProxy = await RBACProxy.deploy(
-      await rbacLogic.getAddress(),
-      await owner.getAddress()
-    );
+    const rbacProxy = await RBACProxy.deploy(await logic.getAddress(), owner.address);
     await rbacProxy.waitForDeployment();
 
     rbac = await ethers.getContractAt(
@@ -40,55 +27,136 @@ describe("CandidateRegistry (simple)", function () {
       await rbacProxy.getAddress()
     );
 
-    // give registrar role
-    const registrarRole = await rbac.REGISTRAR_ROLE();
-    await rbac.assignRole(registrarRole, await registrar.getAddress());
-
-    // deploy AuditTrail
-    const AuditTrail = await ethers.getContractFactory("AuditTrail");
-    auditTrail = await AuditTrail.deploy(await rbacProxy.getAddress());
+    auditTrail = await (await ethers.getContractFactory("AuditTrail"))
+      .deploy(await rbacProxy.getAddress());
     await auditTrail.waitForDeployment();
 
-    // deploy CandidateRegistry
-    const CandidateRegistry = await ethers.getContractFactory("CandidateRegistry");
-    candidateRegistry = await CandidateRegistry.deploy(
-      await rbacProxy.getAddress(),
-      await auditTrail.getAddress()
-    );
+    candidateRegistry = await (await ethers.getContractFactory("CandidateRegistry"))
+      .deploy(await rbacProxy.getAddress(), await auditTrail.getAddress());
     await candidateRegistry.waitForDeployment();
+
+    // Human registrar
+    const REGISTRAR = await rbac.REGISTRAR_ROLE();
+    await rbac.assignRole(REGISTRAR, registrar.address);
+    // CandidateRegistry calls logAction inside add/remove/snapshot → needs role
+    await rbac.assignRole(REGISTRAR, await candidateRegistry.getAddress());
   });
 
-  it("registrar can add candidate and read data", async function () {
-    const party = "Party A";
-    const names = ["Alice", "Bob"];
+  // ── addCandidate ────────────────────────────────────────────────────────────
 
-    // add candidate
-    await candidateRegistry.connect(registrar).addCandidate(party, names);
-
-    // first candidate gets id = 1
-    expect(await candidateRegistry.getParty(1)).to.equal(party);
-
-    const storedNames = await candidateRegistry.getCandidateNames(1);
-    expect(storedNames.length).to.equal(2);
-    expect(storedNames[0]).to.equal("Alice");
-    expect(storedNames[1]).to.equal("Bob");
+  it("registrar can add a single-name candidate; id starts at 1", async function () {
+    await candidateRegistry.connect(registrar).addCandidate("Party A", ["Alice"]);
+    expect(await candidateRegistry.getParty(1)).to.equal("Party A");
+    const names = await candidateRegistry.getCandidateNames(1);
+    expect(names.length).to.equal(1);
+    expect(names[0]).to.equal("Alice");
   });
 
-  it("non-registrar cannot add candidate", async function () {
+  it("registrar can add a multi-name candidate (parliamentary list)", async function () {
+    await candidateRegistry.connect(registrar).addCandidate("Party B", ["Bob", "Carol", "Dave"]);
+    const names = await candidateRegistry.getCandidateNames(1);
+    expect(names.length).to.equal(3);
+    expect(names[1]).to.equal("Carol");
+  });
+
+  it("ids auto-increment across multiple adds", async function () {
+    await candidateRegistry.connect(registrar).addCandidate("P1", ["Alice"]);
+    await candidateRegistry.connect(registrar).addCandidate("P2", ["Bob"]);
+    expect(await candidateRegistry.getParty(1)).to.equal("P1");
+    expect(await candidateRegistry.getParty(2)).to.equal("P2");
+  });
+
+  it("CandidateAdded event is emitted", async function () {
     await expect(
-      candidateRegistry.connect(user).addCandidate("X", ["Y"])
+      candidateRegistry.connect(registrar).addCandidate("Party A", ["Alice"])
+    ).to.emit(candidateRegistry, "CandidateAdded");
+  });
+
+  it("stranger cannot addCandidate", async function () {
+    await expect(
+      candidateRegistry.connect(stranger).addCandidate("X", ["Y"])
     ).to.be.revertedWith("Not authorized");
   });
 
-  it("snapshot stores candidate ids for election", async function () {
+  it("owner (admin) can also addCandidate", async function () {
+    await candidateRegistry.connect(owner).addCandidate("Party A", ["Alice"]);
+    expect(await candidateRegistry.getParty(1)).to.equal("Party A");
+  });
+
+  it("empty names array is rejected", async function () {
+    await expect(
+      candidateRegistry.connect(registrar).addCandidate("P", [])
+    ).to.be.revertedWith("Empty list");
+  });
+
+  // ── removeCandidate ─────────────────────────────────────────────────────────
+
+  it("registrar can remove an existing candidate", async function () {
+    await candidateRegistry.connect(registrar).addCandidate("Party A", ["Alice"]);
+    await candidateRegistry.connect(registrar).removeCandidate(1);
+    expect(await candidateRegistry.getParty(1)).to.equal(""); // deleted
+  });
+
+  it("removing a non-existent candidate reverts", async function () {
+    await expect(
+      candidateRegistry.connect(registrar).removeCandidate(999)
+    ).to.be.revertedWith("Not found");
+  });
+
+  it("stranger cannot removeCandidate", async function () {
+    await candidateRegistry.connect(registrar).addCandidate("Party A", ["Alice"]);
+    await expect(
+      candidateRegistry.connect(stranger).removeCandidate(1)
+    ).to.be.revertedWith("Not authorized");
+  });
+
+  it("CandidateRemoved event is emitted", async function () {
+    await candidateRegistry.connect(registrar).addCandidate("P", ["A"]);
+    await expect(
+      candidateRegistry.connect(registrar).removeCandidate(1)
+    ).to.emit(candidateRegistry, "CandidateRemoved");
+  });
+
+  // ── snapshot ────────────────────────────────────────────────────────────────
+
+  it("snapshot records all current candidate ids for the election", async function () {
     await candidateRegistry.connect(registrar).addCandidate("Party A", ["Alice"]);
     await candidateRegistry.connect(registrar).addCandidate("Party B", ["Bob"]);
-
     await candidateRegistry.connect(registrar).snapshot(electionId);
 
     const ids = await candidateRegistry.getCandidates(electionId);
     expect(ids.length).to.equal(2);
-    expect(ids[0]).to.equal(1);
-    expect(ids[1]).to.equal(2);
+    expect(ids[0]).to.equal(1n);
+    expect(ids[1]).to.equal(2n);
+  });
+
+  it("snapshot after removeCandidate does not include removed candidate", async function () {
+    await candidateRegistry.connect(registrar).addCandidate("P1", ["Alice"]);
+    await candidateRegistry.connect(registrar).addCandidate("P2", ["Bob"]);
+    await candidateRegistry.connect(registrar).removeCandidate(1);
+    await candidateRegistry.connect(registrar).snapshot(electionId);
+
+    const ids = await candidateRegistry.getCandidates(electionId);
+    expect(ids.length).to.equal(1);
+    expect(ids[0]).to.equal(2n);
+  });
+
+  it("snapshotting same election twice reverts", async function () {
+    await candidateRegistry.connect(registrar).addCandidate("P", ["A"]);
+    await candidateRegistry.connect(registrar).snapshot(electionId);
+    await expect(
+      candidateRegistry.connect(registrar).snapshot(electionId)
+    ).to.be.revertedWith("Already snapshotted");
+  });
+
+  it("stranger cannot call snapshot", async function () {
+    await expect(
+      candidateRegistry.connect(stranger).snapshot(electionId)
+    ).to.be.revertedWith("Not authorized");
+  });
+
+  it("getCandidates returns empty array for unseen electionId", async function () {
+    const ids = await candidateRegistry.getCandidates(42);
+    expect(ids.length).to.equal(0);
   });
 });

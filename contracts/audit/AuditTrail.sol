@@ -17,22 +17,24 @@ contract AuditTrail is IAuditTrail {
     }
 
     function logAction(bytes32 actionCode, bytes32 refId) external override {
-        // check RBAC roles via proxy
+        // check RBAC roles via proxy — authorize the direct caller, not tx origin
         bool isRegistrar = IRoleBasedAccess(rbacProxy).hasRole(
             IRoleBasedAccess(rbacProxy).REGISTRAR_ROLE(),
-            tx.origin
+            msg.sender
         );
         bool isAuditor = IRoleBasedAccess(rbacProxy).hasRole(
             IRoleBasedAccess(rbacProxy).AUDITOR_ROLE(),
-            tx.origin
+            msg.sender
         );
         bool isAdmin = IRoleBasedAccess(rbacProxy).hasRole(
             IRoleBasedAccess(rbacProxy).DEFAULT_ADMIN_ROLE(),
-            tx.origin
+            msg.sender
         );
 
         require(isRegistrar || isAuditor || isAdmin, "Not authorized to log");
 
+        // tx.origin is retained in the event as a passive audit record of who
+        // initiated the outer transaction — it is NOT used for authorization.
         emit SystemAction(msg.sender, tx.origin, actionCode, refId, block.timestamp);
     }
 }

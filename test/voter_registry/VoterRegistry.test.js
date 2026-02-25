@@ -1,38 +1,40 @@
-// test/voter_registry/VoterRegistry.simple.test.js
 const { expect } = require("chai");
 const { ethers } = require("hardhat");
 
-describe("VoterRegistry (simple)", function () {
-  let owner;
-  let registrar;
+// ─── Merkle helpers (mirror of VoterRegistry.verifyProof) ────────────────────
+function makeLeaf(index, voterHash) {
+  return ethers.keccak256(ethers.solidityPacked(["uint256", "bytes32"], [index, voterHash]));
+}
+function sortedHash(a, b) {
+  return BigInt(a) <= BigInt(b)
+    ? ethers.keccak256(ethers.concat([a, b]))
+    : ethers.keccak256(ethers.concat([b, a]));
+}
+function buildTree(voterHash) {
+  const leaf0 = makeLeaf(0, voterHash);
+  const leaf1 = makeLeaf(1, voterHash);
+  return { root: sortedHash(leaf0, leaf1), leaf0, leaf1 };
+}
 
-  let rbacLogic;
-  let rbacProxy;
-  let rbac;
-
-  let auditTrail;
-  let voterRegistry;
+describe("VoterRegistry", function () {
+  let owner, registrar, stranger;
+  let rbac, auditTrail, voterRegistry;
 
   const electionId = 1;
 
   beforeEach(async function () {
-    [owner, registrar] = await ethers.getSigners();
+    [owner, registrar, stranger] = await ethers.getSigners();
 
-    // deploy RBAC logic
-    const RBACLogic = await ethers.getContractFactory(
+    const Logic = await ethers.getContractFactory(
       "contracts/access/RoleBasedAccess.sol:RoleBasedAccessLogicV1"
     );
-    rbacLogic = await RBACLogic.deploy();
-    await rbacLogic.waitForDeployment();
+    const logic = await Logic.deploy();
+    await logic.waitForDeployment();
 
-    // deploy RBAC proxy (owner is admin)
     const RBACProxy = await ethers.getContractFactory(
       "contracts/access/RoleBasedAccessProxy.sol:RoleBasedAccessProxy"
     );
-    rbacProxy = await RBACProxy.deploy(
-      await rbacLogic.getAddress(),
-      await owner.getAddress()
-    );
+    const rbacProxy = await RBACProxy.deploy(await logic.getAddress(), owner.address);
     await rbacProxy.waitForDeployment();
 
     rbac = await ethers.getContractAt(
@@ -40,57 +42,137 @@ describe("VoterRegistry (simple)", function () {
       await rbacProxy.getAddress()
     );
 
-    // give registrar role
-    const registrarRole = await rbac.REGISTRAR_ROLE();
-    await rbac.assignRole(registrarRole, await registrar.getAddress());
-
-    // deploy AuditTrail
-    const AuditTrail = await ethers.getContractFactory("AuditTrail");
-    auditTrail = await AuditTrail.deploy(await rbacProxy.getAddress());
+    auditTrail = await (await ethers.getContractFactory("AuditTrail"))
+      .deploy(await rbacProxy.getAddress());
     await auditTrail.waitForDeployment();
 
-    // deploy VoterRegistry
-    const VoterRegistry = await ethers.getContractFactory("VoterRegistry");
-    voterRegistry = await VoterRegistry.deploy(
-      await rbacProxy.getAddress(),
-      await auditTrail.getAddress()
-    );
+    voterRegistry = await (await ethers.getContractFactory("VoterRegistry"))
+      .deploy(await rbacProxy.getAddress(), await auditTrail.getAddress());
     await voterRegistry.waitForDeployment();
+
+    // Human registrar
+    const REGISTRAR = await rbac.REGISTRAR_ROLE();
+    await rbac.assignRole(REGISTRAR, registrar.address);
+    // VoterRegistry calls logAction in snapshot() → needs role in AuditTrail
+    await rbac.assignRole(REGISTRAR, await voterRegistry.getAddress());
   });
 
-  it("allows eligible voter to vote once", async function () {
-    // fake voter data
-    const voterIndex = 0;
+  // ── snapshot ──────────────────────────────────────────────────────────────
+
+  it("registrar can snapshot a Merkle root for an election", async function () {
     const voterHash = ethers.keccak256(ethers.toUtf8Bytes("voter"));
+    const { root } = buildTree(voterHash);
+    await expect(voterRegistry.connect(registrar).snapshot(electionId, root))
+      .to.emit(voterRegistry, "SnapshotTaken")
+      .withArgs(electionId, root, (await ethers.provider.getBlock("latest")).timestamp + 1);
+    expect(await voterRegistry.getSnapshot(electionId)).to.equal(root);
+  });
 
-    // build 2-leaf merkle tree
-    const leaf0 = ethers.keccak256(
-      ethers.solidityPacked(["uint256", "bytes32"], [0, voterHash])
-    );
-    const leaf1 = ethers.keccak256(
-      ethers.solidityPacked(["uint256", "bytes32"], [1, voterHash])
-    );
+  it("snapshotting the same election twice reverts", async function () {
+    const voterHash = ethers.keccak256(ethers.toUtf8Bytes("v"));
+    const { root } = buildTree(voterHash);
+    await voterRegistry.connect(registrar).snapshot(electionId, root);
+    await expect(
+      voterRegistry.connect(registrar).snapshot(electionId, root)
+    ).to.be.revertedWith("Already snapshotted");
+  });
 
-    // sorted pair hash (same rule as contract)
-    const root =
-      BigInt(leaf0) < BigInt(leaf1)
-        ? ethers.keccak256(ethers.concat([leaf0, leaf1]))
-        : ethers.keccak256(ethers.concat([leaf1, leaf0]));
+  it("stranger cannot snapshot", async function () {
+    const { root } = buildTree(ethers.keccak256(ethers.toUtf8Bytes("v")));
+    await expect(
+      voterRegistry.connect(stranger).snapshot(electionId, root)
+    ).to.be.revertedWith("Not authorized");
+  });
 
-    // snapshot election
+  it("getSnapshot returns zero bytes32 for unknown election", async function () {
+    expect(await voterRegistry.getSnapshot(999)).to.equal(ethers.ZeroHash);
+  });
+
+  // ── vote ──────────────────────────────────────────────────────────────────
+
+  it("eligible voter (index 0) can vote and Voted event is emitted", async function () {
+    const voterHash = ethers.keccak256(ethers.toUtf8Bytes("voter"));
+    const { root, leaf1 } = buildTree(voterHash);
     await voterRegistry.connect(registrar).snapshot(electionId, root);
 
-    // proof = sibling only (2-leaf tree)
-    const proof = [leaf1];
+    await expect(voterRegistry.vote(electionId, 0, voterHash, [leaf1]))
+      .to.emit(voterRegistry, "Voted")
+      .withArgs(electionId, 0, voterHash);
+  });
 
-    // vote should work
-    await voterRegistry.vote(electionId, voterIndex, voterHash, proof);
+  it("hasVoted returns true after a successful vote", async function () {
+    const voterHash = ethers.keccak256(ethers.toUtf8Bytes("voter"));
+    const { root, leaf1 } = buildTree(voterHash);
+    await voterRegistry.connect(registrar).snapshot(electionId, root);
+    await voterRegistry.vote(electionId, 0, voterHash, [leaf1]);
+    expect(await voterRegistry.hasVoted(electionId, 0)).to.equal(true);
+  });
 
-    expect(await voterRegistry.hasVoted(electionId, voterIndex)).to.equal(true);
+  it("hasVoted returns false for voter that has not voted", async function () {
+    expect(await voterRegistry.hasVoted(electionId, 0)).to.equal(false);
+  });
 
-    // second vote should fail
+  it("second vote with same index reverts with 'Already voted'", async function () {
+    const voterHash = ethers.keccak256(ethers.toUtf8Bytes("voter"));
+    const { root, leaf1 } = buildTree(voterHash);
+    await voterRegistry.connect(registrar).snapshot(electionId, root);
+    await voterRegistry.vote(electionId, 0, voterHash, [leaf1]);
     await expect(
-      voterRegistry.vote(electionId, voterIndex, voterHash, proof)
+      voterRegistry.vote(electionId, 0, voterHash, [leaf1])
     ).to.be.revertedWith("Already voted");
+  });
+
+  it("ineligible voter (bad proof) is rejected", async function () {
+    const voterHash = ethers.keccak256(ethers.toUtf8Bytes("voter"));
+    const { root } = buildTree(voterHash);
+    await voterRegistry.connect(registrar).snapshot(electionId, root);
+
+    const badProof = [ethers.keccak256(ethers.toUtf8Bytes("wrong"))];
+    await expect(
+      voterRegistry.vote(electionId, 0, voterHash, badProof)
+    ).to.be.revertedWith("Not eligible");
+  });
+
+  it("voting before any snapshot reverts with 'No snapshot'", async function () {
+    const voterHash = ethers.keccak256(ethers.toUtf8Bytes("voter"));
+    await expect(
+      voterRegistry.vote(electionId, 0, voterHash, [])
+    ).to.be.revertedWith("No snapshot");
+  });
+
+  it("two voters at different indices can each vote independently", async function () {
+    const hash0 = ethers.keccak256(ethers.toUtf8Bytes("voter-0"));
+    const hash1 = ethers.keccak256(ethers.toUtf8Bytes("voter-1"));
+    const leaf0 = makeLeaf(0, hash0);
+    const leaf1 = makeLeaf(1, hash1);
+    const root  = sortedHash(leaf0, leaf1);
+
+    await voterRegistry.connect(registrar).snapshot(electionId, root);
+
+    await voterRegistry.vote(electionId, 0, hash0, [leaf1]);
+    await voterRegistry.vote(electionId, 1, hash1, [leaf0]);
+
+    expect(await voterRegistry.hasVoted(electionId, 0)).to.equal(true);
+    expect(await voterRegistry.hasVoted(electionId, 1)).to.equal(true);
+  });
+
+  // ── verifyProof (public view) ─────────────────────────────────────────────
+
+  it("verifyProof returns true for a valid (index, voterHash) pair", async function () {
+    const voterHash = ethers.keccak256(ethers.toUtf8Bytes("voter"));
+    const { root, leaf1 } = buildTree(voterHash);
+    await voterRegistry.connect(registrar).snapshot(electionId, root);
+
+    const leaf0 = makeLeaf(0, voterHash);
+    expect(await voterRegistry.verifyProof(electionId, leaf0, [leaf1])).to.equal(true);
+  });
+
+  it("verifyProof returns false for a tampered voterHash", async function () {
+    const voterHash = ethers.keccak256(ethers.toUtf8Bytes("voter"));
+    const { root, leaf1 } = buildTree(voterHash);
+    await voterRegistry.connect(registrar).snapshot(electionId, root);
+
+    const tamperedLeaf = makeLeaf(0, ethers.keccak256(ethers.toUtf8Bytes("tampered")));
+    expect(await voterRegistry.verifyProof(electionId, tamperedLeaf, [leaf1])).to.equal(false);
   });
 });
