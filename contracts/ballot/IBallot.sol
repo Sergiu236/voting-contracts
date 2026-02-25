@@ -38,4 +38,7 @@ interface IBallot {
 
     /// @notice return the electionId this ballot belongs to
     function electionId() external view returns (uint256);
+
+    /// 🔴 NEW — read on-chain tally for a candidate (per shard)
+    function getVoteCount(uint256 candidateId) external view returns (uint256);
 }

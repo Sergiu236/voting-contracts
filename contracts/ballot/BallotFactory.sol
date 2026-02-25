@@ -1,65 +1,70 @@
-// SPDX-License-Identifier: UNLICENSED
+// SPDX-License-Identifier: MIT
 pragma solidity ^0.8.20;
 
-import { IBallotFactory } from "./IBallotFactory.sol";
-import { IBallot } from "./IBallot.sol";
-import { Ballot } from "./Ballot.sol";
-import { IRoleBasedAccess } from "../access/IRoleBasedAccess.sol";
-import { IAuditTrail } from "../audit/IAuditTrail.sol";
+import "./IBallotFactory.sol";
+import "./Ballot.sol";
 
-/// @title BallotFactory
-/// @notice Deploys Ballot contracts, one per election.
-/// @dev For now we use `new Ballot(...)` directly (simple). Later we could use minimal proxy for efficiency.
+// Factory that deploys ballots per election shard
 contract BallotFactory is IBallotFactory {
-    address public immutable rbacProxy;
-    address public immutable voterRegistry;
-    address public immutable candidateRegistry;
-    address public immutable auditTrail;
 
-    // electionId => ballot address
-    mapping(uint256 => address) private ballots;
+    // electionId => shardId => ballot
+    mapping(uint256 => mapping(uint256 => address)) private ballots;
+
+    // electionId => shard count
+    mapping(uint256 => uint256) private shardCounts;
+
+    address private voterRegistry;
+    address private candidateRegistry;
+    address private voteToken;
+    address private roleBasedAccess;
 
     constructor(
-        address _rbacProxy,
         address _voterRegistry,
         address _candidateRegistry,
-        address _auditTrail
+        address _voteToken,
+        address _roleBasedAccess
     ) {
-        require(_rbacProxy != address(0), "rbac zero");
-        require(_voterRegistry != address(0), "voter registry zero");
-        require(_candidateRegistry != address(0), "candidate registry zero");
-        require(_auditTrail != address(0), "audit zero");
-
-        rbacProxy = _rbacProxy;
         voterRegistry = _voterRegistry;
         candidateRegistry = _candidateRegistry;
-        auditTrail = _auditTrail;
+        voteToken = _voteToken;
+        roleBasedAccess = _roleBasedAccess;
     }
 
-    /// @notice Deploy a new Ballot for a given election
-    function deployBallot(uint256 electionId) external override returns (address ballot) {
-        require(electionId != 0, "invalid electionId");
-        require(ballots[electionId] == address(0), "already exists");
+    function deployBallot(
+        uint256 electionId,
+        uint256 shardId
+    ) external override returns (address) {
+        require(ballots[electionId][shardId] == address(0), "Ballot exists");
 
-        // create a new Ballot instance
-        Ballot newBallot = new Ballot(
+        Ballot ballot = new Ballot(
             electionId,
-            rbacProxy,
             voterRegistry,
             candidateRegistry,
-            auditTrail
+            voteToken,
+            roleBasedAccess
         );
 
-        ballots[electionId] = address(newBallot);
+        ballots[electionId][shardId] = address(ballot);
 
-        emit BallotDeployed(electionId, address(newBallot));
-        IAuditTrail(auditTrail).logAction(bytes32("BALLOT_DEPLOY"), bytes32(electionId));
+        if (shardId + 1 > shardCounts[electionId]) {
+            shardCounts[electionId] = shardId + 1;
+        }
 
-        return address(newBallot);
+        emit BallotDeployed(electionId, shardId, address(ballot));
+
+        return address(ballot);
     }
 
-    /// @notice Get the ballot address for an election
-    function getBallot(uint256 electionId) external view override returns (address ballot) {
-        return ballots[electionId];
+    function getBallot(
+        uint256 electionId,
+        uint256 shardId
+    ) external view override returns (address) {
+        return ballots[electionId][shardId];
+    }
+
+    function getShardCount(
+        uint256 electionId
+    ) external view override returns (uint256) {
+        return shardCounts[electionId];
     }
 }

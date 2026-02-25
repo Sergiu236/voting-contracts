@@ -9,9 +9,8 @@ import { IAuditTrail } from "../audit/IAuditTrail.sol";
 
 /// @title Ballot
 /// @notice Records votes for a single election.
-/// @dev Ballot only enforces voting rules and emits events. It does not tally results.
+/// @dev Ballot enforces voting rules AND tallies votes per candidate.
 contract Ballot is IBallot {
-    /// @notice The election this ballot belongs to (immutable)
     uint256 public immutable override electionId;
 
     address public immutable rbacProxy;
@@ -19,8 +18,10 @@ contract Ballot is IBallot {
     address public immutable candidateRegistry;
     address public immutable auditTrail;
 
-    // is the ballot currently open
     bool private ballotOpen;
+
+    // 🔴 NEW: candidateId => votes (on-chain tally)
+    mapping(uint256 => uint256) private voteCounts;
 
     constructor(
         uint256 _electionId,
@@ -42,7 +43,6 @@ contract Ballot is IBallot {
         auditTrail = _auditTrail;
     }
 
-    /// @notice open the ballot (only registrar or admin)
     function open() external override {
         require(_hasRegistrarOrAdmin(msg.sender), "Not authorized");
         ballotOpen = true;
@@ -50,7 +50,6 @@ contract Ballot is IBallot {
         IAuditTrail(auditTrail).logAction(bytes32("BALLOT_OPEN"), bytes32(electionId));
     }
 
-    /// @notice close the ballot (only registrar or admin)
     function close() external override {
         require(_hasRegistrarOrAdmin(msg.sender), "Not authorized");
         ballotOpen = false;
@@ -58,27 +57,30 @@ contract Ballot is IBallot {
         IAuditTrail(auditTrail).logAction(bytes32("BALLOT_CLOSE"), bytes32(electionId));
     }
 
-    /// @notice check if the ballot is currently open
     function isOpen() external view override returns (bool) {
         return ballotOpen;
     }
 
-    /// @notice voter casts a vote
     function castVote(
         uint256 index,
         bytes32 voterHash,
         bytes32[] calldata proof,
         uint256 candidateId
     ) external override {
-        // 1. ballot must be open
         require(ballotOpen, "Ballot closed");
 
-        // 2. check voter eligibility & uniqueness (marks as voted inside VoterRegistry)
-        IVoterRegistry(voterRegistry).vote(electionId, index, voterHash, proof);
+        // marks voter as voted inside registry
+        IVoterRegistry(voterRegistry).vote(
+            electionId,
+            index,
+            voterHash,
+            proof
+        );
 
-        // 3. check candidate exists in snapshot
-        uint256[] memory validCandidates = ICandidateRegistry(candidateRegistry).getCandidates(electionId);
-        bool found = false;
+        uint256[] memory validCandidates =
+            ICandidateRegistry(candidateRegistry).getCandidates(electionId);
+
+        bool found;
         for (uint256 i = 0; i < validCandidates.length; i++) {
             if (validCandidates[i] == candidateId) {
                 found = true;
@@ -87,13 +89,28 @@ contract Ballot is IBallot {
         }
         require(found, "Invalid candidate");
 
-        // 4. record vote by emitting event only
+        // 🔴 NEW: on-chain tally
+        voteCounts[candidateId] += 1;
+
         emit VoteCast(msg.sender, candidateId);
         IAuditTrail(auditTrail).logAction(bytes32("VOTE_CAST"), bytes32(electionId));
     }
 
-    /// @notice helper for role checks
-    function _hasRegistrarOrAdmin(address account) internal view returns (bool) {
+    // 🔴 NEW: read tally
+    function getVoteCount(uint256 candidateId)
+        external
+        view
+        override
+        returns (uint256)
+    {
+        return voteCounts[candidateId];
+    }
+
+    function _hasRegistrarOrAdmin(address account)
+        internal
+        view
+        returns (bool)
+    {
         bool isRegistrar = IRoleBasedAccess(rbacProxy).hasRole(
             IRoleBasedAccess(rbacProxy).REGISTRAR_ROLE(),
             account
