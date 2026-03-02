@@ -45,6 +45,7 @@ contract RoleBasedAccessProxy {
         _delegate(_getLogicContract());
     }
 
+    // forwards plain ether transfers to the logic contract
     receive() external payable {
         _delegate(_getLogicContract());
     }

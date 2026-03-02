@@ -1,28 +1,46 @@
-// SPDX-License-Identifier: UNLICENSED
+// SPDX-License-Identifier: MIT
 pragma solidity ^0.8.20;
 
-/// @notice Interface for candidate registry
-/// @dev Stores candidates directly on-chain (party + names).
+/// @notice Interface for candidate registry (candidates per election)
 interface ICandidateRegistry {
-    event CandidateAdded(uint256 indexed candidateId, string party, string[] names, address indexed registrar);
-    event CandidateRemoved(uint256 indexed candidateId, address indexed registrar);
-    event CandidateSnapshot(uint256 indexed electionId, uint256 timestamp);
+    event CandidateAdded(
+        uint256 indexed electionId,
+        uint256 indexed candidateId,
+        string party
+    );
 
-    /// Add a new candidate (party + list of names). ID is auto-generated.
-    function addCandidate(string calldata party, string[] calldata names) external;
+    event CandidateRemoved(
+        uint256 indexed electionId,
+        uint256 indexed candidateId
+    );
 
-    /// Remove a candidate by id
-    function removeCandidate(uint256 candidateId) external;
+    /// Add multiple candidates for an election
+    function addCandidates(
+        uint256 electionId,
+        string[] calldata parties,
+        string[][] calldata namesList
+    ) external;
 
-    /// Get party of a candidate
-    function getParty(uint256 candidateId) external view returns (string memory);
+    /// Remove candidate from an election
+    function removeCandidate(
+        uint256 electionId,
+        uint256 candidateId
+    ) external;
 
-    /// Get all names for a candidate
-    function getCandidateNames(uint256 candidateId) external view returns (string[] memory);
+    /// Get all candidate IDs for an election
+    function getCandidates(
+        uint256 electionId
+    ) external view returns (uint256[] memory);
 
-    /// Take a snapshot of current candidates for an election
-    function snapshot(uint256 electionId) external;
+    /// Get party of a candidate for an election
+    function getParty(
+        uint256 electionId,
+        uint256 candidateId
+    ) external view returns (string memory);
 
-    /// Get all candidate ids for a given election
-    function getCandidates(uint256 electionId) external view returns (uint256[] memory);
+    /// Get names of a candidate for an election
+    function getCandidateNames(
+        uint256 electionId,
+        uint256 candidateId
+    ) external view returns (string[] memory);
 }

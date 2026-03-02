@@ -23,6 +23,7 @@ contract ResultAggregator {
     ICandidateRegistry private candidateRegistry;
     IElectionTotals private electionManager;
 
+    // stores references to ballot factory, candidate registry, and election manager
     constructor(
         address _ballotFactory,
         address _candidateRegistry,
@@ -33,7 +34,7 @@ contract ResultAggregator {
         electionManager = IElectionTotals(_electionManager);
     }
 
-    /// @notice Total votes for one candidate — reads directly from ElectionManager (O(1))
+    // fetches the total votes for a candidate from the election manager
     function getTotalVotes(
         uint256 electionId,
         uint256 candidateId
@@ -41,7 +42,7 @@ contract ResultAggregator {
         total = electionManager.getElectionTotalVotes(electionId, candidateId);
     }
 
-    /// @notice Full results for an election — O(candidates), no shard loops
+    // fetches all candidates and their vote totals for an election
     function getResults(
         uint256 electionId
     )

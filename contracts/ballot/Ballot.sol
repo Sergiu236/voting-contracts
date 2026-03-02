@@ -30,9 +30,10 @@ contract Ballot is IBallot {
 
     bool private ballotOpen;
 
-    // 🔴 NEW: candidateId => votes (on-chain tally)
+    //candidateId => votes (on-chain tally)
     mapping(uint256 => uint256) private voteCounts;
 
+    // sets up the ballot with election config and contract dependencies
     constructor(
         uint256 _electionId,
         address _rbacProxy,
@@ -55,6 +56,7 @@ contract Ballot is IBallot {
         electionManager = _electionManager; // may be address(0)
     }
 
+    // opens the ballot so voters can start casting votes
     function open() external override {
         require(_hasRegistrarOrAdmin(msg.sender), "Not authorized");
         ballotOpen = true;
@@ -62,6 +64,7 @@ contract Ballot is IBallot {
         IAuditTrail(auditTrail).logAction(bytes32("BALLOT_OPEN"), bytes32(electionId));
     }
 
+    // closes the ballot to stop accepting votes
     function close() external override {
         require(_hasRegistrarOrAdmin(msg.sender), "Not authorized");
         ballotOpen = false;
@@ -69,10 +72,12 @@ contract Ballot is IBallot {
         IAuditTrail(auditTrail).logAction(bytes32("BALLOT_CLOSE"), bytes32(electionId));
     }
 
+    // returns whether the ballot is currently accepting votes
     function isOpen() external view override returns (bool) {
         return ballotOpen;
     }
 
+    // cast a vote after verifying voter eligibility and candidate validity
     function castVote(
         uint256 index,
         bytes32 voterHash,
@@ -101,7 +106,7 @@ contract Ballot is IBallot {
         }
         require(found, "Invalid candidate");
 
-        // 🔴 NEW: on-chain tally
+        //on-chain tally
         voteCounts[candidateId] += 1;
 
         // Notify ElectionManager to keep global totals up-to-date (write-time aggregation)
@@ -113,7 +118,7 @@ contract Ballot is IBallot {
         IAuditTrail(auditTrail).logAction(bytes32("VOTE_CAST"), bytes32(electionId));
     }
 
-    // 🔴 NEW: read tally
+    // read tally
     function getVoteCount(uint256 candidateId)
         external
         view
@@ -123,6 +128,7 @@ contract Ballot is IBallot {
         return voteCounts[candidateId];
     }
 
+    // checks if an address holds registrar or admin role
     function _hasRegistrarOrAdmin(address account)
         internal
         view

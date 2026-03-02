@@ -6,7 +6,6 @@ import { IRoleBasedAccess } from "./IRoleBasedAccess.sol";
 /**
  * @title RoleBasedAccess
  * @notice This contract controls who can do what in the voting system.
- *         It uses OpenZeppelin’s AccessControlEnumerable (upgradeable version).
  *         Has roles with names: ADMIN, REGISTRAR, AUDITOR, UPGRADER.
  *         Because it’s upgradeable, we use an initialize function instead of a constructor. (so the proxy holds the state)
  */

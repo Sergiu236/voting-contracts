@@ -15,11 +15,7 @@ interface IBallot {
     /// @notice Emitted when the ballot is closed
     event BallotClosed();
 
-    /// @notice cast a vote for a candidate
-    /// @param index the index of the voter in the Merkle tree
-    /// @param voterHash the hashed identifier of the voter
-    /// @param proof the Merkle proof to show this voter is in the snapshot
-    /// @param candidateId the candidate the voter selects
+    // cast a vote for a candidate after proving voter eligibility
     function castVote(
         uint256 index,
         bytes32 voterHash,
@@ -27,18 +23,18 @@ interface IBallot {
         uint256 candidateId
     ) external;
 
-    /// @notice open the ballot (only admin or registrar)
+    // open the ballot so voting can begin
     function open() external;
 
-    /// @notice close the ballot (only admin or registrar)
+    // close the ballot to stop accepting votes
     function close() external;
 
-    /// @notice check if the ballot is currently open
+    // check if this ballot is currently accepting votes
     function isOpen() external view returns (bool);
 
-    /// @notice return the electionId this ballot belongs to
+    // return the election id this ballot is linked to
     function electionId() external view returns (uint256);
 
-    /// 🔴 NEW — read on-chain tally for a candidate (per shard)
+    /// read on-chain tally for a candidate (per shard)
     function getVoteCount(uint256 candidateId) external view returns (uint256);
 }

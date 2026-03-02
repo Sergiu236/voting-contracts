@@ -12,6 +12,7 @@ contract TallyVerifier is ITallyVerifier {
         bool valid
     );
 
+    // verifies the tally for an election and emits the result
     function verifyTally(
         uint256 electionId,
         bytes calldata, // proof (unused for now)

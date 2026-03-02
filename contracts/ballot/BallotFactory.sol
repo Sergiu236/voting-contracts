@@ -27,6 +27,7 @@ contract BallotFactory is IBallotFactory {
     // Deployer address used to restrict setElectionManager
     address private immutable deployer;
 
+    // stores shared contract addresses used by all deployed ballots
     constructor(
         address _voterRegistry,
         address _candidateRegistry,
@@ -40,8 +41,7 @@ contract BallotFactory is IBallotFactory {
         deployer = msg.sender;
     }
 
-    /// @notice Wire up ElectionManager after both contracts are deployed.
-    ///         May only be called once by the original deployer.
+    // wires up the election manager address after deployment, can only be called once
     function setElectionManager(address _electionManager) external {
         require(msg.sender == deployer, "Not authorized");
         require(electionManager == address(0), "Already set");
@@ -49,11 +49,12 @@ contract BallotFactory is IBallotFactory {
         electionManager = _electionManager;
     }
 
-    /// @notice Returns the electionId that a ballot was deployed for, or 0 if unknown.
+    // returns the election id a ballot was deployed for, or 0 if unknown
     function getElectionForBallot(address ballot) external view returns (uint256) {
         return ballotToElection[ballot];
     }
 
+    // deploys a new ballot contract for a given election shard
     function deployBallot(
         uint256 electionId,
         uint256 shardId
@@ -81,6 +82,7 @@ contract BallotFactory is IBallotFactory {
         return address(ballot);
     }
 
+    // returns the ballot address for a specific election shard
     function getBallot(
         uint256 electionId,
         uint256 shardId
@@ -88,6 +90,7 @@ contract BallotFactory is IBallotFactory {
         return ballots[electionId][shardId];
     }
 
+    // returns the number of shards deployed for an election
     function getShardCount(
         uint256 electionId
     ) external view override returns (uint256) {

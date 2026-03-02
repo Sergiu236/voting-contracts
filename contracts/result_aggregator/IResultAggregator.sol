@@ -5,13 +5,13 @@ pragma solidity ^0.8.20;
 /// @notice Interface for aggregating on-chain vote tallies
 interface IResultAggregator {
 
-    /// @notice Returns total votes for a candidate across all shards
+    // returns total votes for a candidate across all shards
     function getTotalVotes(
         uint256 electionId,
         uint256 candidateId
     ) external view returns (uint256);
 
-    /// @notice Returns full results for an election
+    // returns all candidate ids and vote totals for an election
     function getResults(
         uint256 electionId
     )

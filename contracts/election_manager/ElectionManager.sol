@@ -37,6 +37,7 @@ contract ElectionManager {
     ITallyVerifier private tallyVerifier;
     IRoleBasedAccess private rbac;
 
+    // stores references to ballot factory, tally verifier, and rbac proxy
     constructor(
         address _ballotFactory,
         address _tallyVerifier,
@@ -47,6 +48,7 @@ contract ElectionManager {
         rbac = IRoleBasedAccess(_rbacProxy);
     }
 
+    // checks if an address has the admin role
     function _hasAdminRole(address account) internal view returns (bool) {
         return rbac.hasRole(rbac.DEFAULT_ADMIN_ROLE(), account);
     }
@@ -134,10 +136,7 @@ contract ElectionManager {
         return elections[electionId].state;
     }
 
-    /// @notice Called by registered Ballot shards on every castVote to keep
-    ///         global totals up-to-date at write-time (O(1) per vote).
-    /// @dev Security: validates msg.sender is a ballot that was deployed by
-    ///      BallotFactory for exactly this electionId.
+    // increments the vote total for a candidate when a ballot calls in
     function incrementTotal(uint256 electionId, uint256 candidateId) external {
         // Verify the caller is a ballot registered for this electionId
         uint256 registeredId = IBallotLookup(address(ballotFactory))
@@ -149,8 +148,7 @@ contract ElectionManager {
         totalVotes[electionId][candidateId] += 1;
     }
 
-    /// @notice Returns the pre-aggregated vote total for one candidate.
-    ///         Used by ResultAggregator to avoid shard loops.
+    // returns the pre-aggregated vote count for a candidate in an election
     function getElectionTotalVotes(
         uint256 electionId,
         uint256 candidateId

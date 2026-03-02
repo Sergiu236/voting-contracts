@@ -11,11 +11,13 @@ contract AuditTrail is IAuditTrail {
     /// @notice address of the RoleBasedAccess proxy
     address public immutable rbacProxy;
 
+    // sets the rbac proxy address used for role checks
     constructor(address _rbacProxy) {
         require(_rbacProxy != address(0), "RBAC proxy zero");
         rbacProxy = _rbacProxy;
     }
 
+    // checks caller roles and emits a system action log entry
     function logAction(bytes32 actionCode, bytes32 refId) external override {
         // check RBAC roles via proxy — authorize the direct caller, not tx origin
         bool isRegistrar = IRoleBasedAccess(rbacProxy).hasRole(
